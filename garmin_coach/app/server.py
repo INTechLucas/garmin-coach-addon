@@ -11,9 +11,12 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from . import compact, fit_tools
+from .fiches import TYPES, FicheStore
 from .garmin import GarminClient
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+DELETE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PATH = re.compile(r"^/[A-Za-z0-9_\-/.]+$")
 
@@ -21,7 +24,10 @@ INSTRUCTIONS = (
     "Données d'entraînement Garmin Connect de l'athlète (lecture seule). "
     "Commencer par list_activities pour trouver l'activity_id, puis get_activity_laps pour les tours "
     "(allure, FC, cadence), get_activity_streams pour le détail point par point, "
-    "get_wellness pour la récupération (sommeil, VFC, FC repos)."
+    "get_wellness pour la récupération (sommeil, VFC, FC repos). "
+    "Les fiches de coaching (résumé de la semaine, séances, analyses, plan) se publient avec "
+    "publish_fiche : elles s'affichent dans le panneau « Coach » de Home Assistant que l'athlète "
+    "consulte sur son téléphone. Écrire en Markdown, court et lisible sur mobile."
 )
 
 
@@ -68,8 +74,8 @@ def compact_activity(a: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in out.items() if v not in (None, "")}
 
 
-def build_server(garmin: GarminClient) -> MCPServer:
-    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.1.1")
+def build_server(garmin: GarminClient, store: FicheStore) -> MCPServer:
+    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.2.0")
 
     @mcp.tool(annotations=RO)
     def list_activities(start_date: str | None = None, end_date: str | None = None,
@@ -159,5 +165,45 @@ def build_server(garmin: GarminClient) -> MCPServer:
         if not _PATH.match(path) or ".." in path:
             raise ToolError("Chemin invalide : doit commencer par / et ne contenir que lettres, chiffres, -, _, ., /")
         return {"reponse": garmin.get(path, params)}
+
+    # ---- Fiches du panneau Coach ------------------------------------------------
+    @mcp.tool(annotations=WRITE)
+    def publish_fiche(type: str, titre: str, contenu: str, resume: str | None = None,
+                      date: str | None = None, semaine: str | None = None, id: str | None = None) -> dict[str, Any]:
+        """Crée ou met à jour une fiche affichée dans le panneau « Coach » de Home Assistant.
+
+        type : semaine (résumé hebdo, affiché en page d'accueil), seance (séance prévue ou réalisée),
+        analyse (analyse ponctuelle : course, test, bilan santé), plan (plan d'entraînement).
+        contenu : Markdown (titres ##, listes, **gras**, tableaux). Viser court et lisible sur mobile.
+        resume : une ou deux phrases affichées en tête de fiche.
+        date : AAAA-MM-JJ (jour de la séance / de l'analyse). semaine : AAAA-Wss (semaine ISO, lundi-dimanche).
+        Pour type=semaine, une seule fiche par semaine (l'id vaut la semaine) : republier la met à jour.
+        id : pour mettre à jour une fiche existante d'un autre type (voir list_fiches)."""
+        return store.save(type_=type, titre=titre, contenu=contenu, resume=resume,
+                          date_=date, semaine=semaine, fiche_id=id)
+
+    @mcp.tool(annotations=RO)
+    def list_fiches(type: str | None = None, semaine: str | None = None) -> dict[str, Any]:
+        """Liste les fiches du panneau Coach (sans leur contenu), les plus récentes d'abord.
+        Filtres facultatifs : type (semaine, seance, analyse, plan) et semaine (AAAA-Wss)."""
+        items = store.list(type, semaine)
+        return {"nombre": len(items), "fiches": [
+            {k: f.get(k) for k in ("id", "type", "titre", "date", "semaine", "resume", "mis_a_jour")}
+            for f in items]}
+
+    @mcp.tool(annotations=RO)
+    def get_fiche(type: str, id: str) -> dict[str, Any]:
+        """Contenu complet d'une fiche du panneau Coach."""
+        f = store.get(type, id)
+        if f is None:
+            raise ToolError(f"Aucune fiche {type}/{id}")
+        return f
+
+    @mcp.tool(annotations=DELETE)
+    def delete_fiche(type: str, id: str) -> dict[str, Any]:
+        """Supprime une fiche du panneau Coach (définitif)."""
+        if not store.delete(type, id):
+            raise ToolError(f"Aucune fiche {type}/{id}")
+        return {"supprimee": f"{type}/{id}"}
 
     return mcp

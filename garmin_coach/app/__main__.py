@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import json
@@ -14,13 +15,17 @@ from pathlib import Path
 import uvicorn
 from mcp.server.transport_security import TransportSecuritySettings
 
+from .fiches import FicheStore
 from .garmin import GarminClient
+from .panel import build_panel
 from .server import build_server
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 OPTIONS_FILE = Path(os.environ.get("OPTIONS_FILE", DATA_DIR / "options.json"))
 SSL_DIR = Path(os.environ.get("SSL_DIR", "/ssl"))
 FIT_DIR = Path(os.environ.get("FIT_DIR", "/share/garmin-coach/fit"))
+COACH_DIR = Path(os.environ.get("COACH_DIR", "/share/garmin-coach/coach"))
+PANEL_PORT = int(os.environ.get("PANEL_PORT", "8099"))
 # Réseau interne des add-ons HA : seul un proxy situé ici peut indiquer l'IP réelle du client
 TRUSTED_PROXIES = ipaddress.ip_network("172.30.32.0/23")
 PORT = int(os.environ.get("PORT", "8766"))
@@ -112,7 +117,8 @@ def main() -> None:
     token = load_access_token(options)
     migrate_fit_files(DATA_DIR / "fit", FIT_DIR)
     garmin = GarminClient(options.get("garmin_api_key", ""), FIT_DIR)
-    mcp = build_server(garmin)
+    store = FicheStore(COACH_DIR)
+    mcp = build_server(garmin, store)
     app = mcp.streamable_http_app(
         streamable_http_path=f"/{token}/mcp",
         stateless_http=True,
@@ -128,12 +134,21 @@ def main() -> None:
             raise SystemExit(f"Certificat introuvable ({cert}, {key}) : vérifiez l'add-on Let's Encrypt / Duck DNS.")
         ssl_kwargs = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
-    LOG.info("Serveur MCP Garmin prêt sur le port %s. URL du connecteur : %s://<votre-domaine>:%s/%s…/mcp "
-             "(jeton complet dans la configuration de l'add-on ou /data/access_token)",
-             PORT, "https" if ssl_kwargs else "http", PORT, token[:4])
-    uvicorn.run(Guard(app, token), host="0.0.0.0", port=PORT, access_log=False,
-                log_level=level.lower(), proxy_headers=False, **ssl_kwargs)
+    LOG.info("Serveur MCP prêt (port %s). URL du connecteur : https://<votre-domaine>/%s…/mcp "
+             "(jeton complet dans l'option access_token)", PORT, token[:4])
+    LOG.info("Panneau Coach prêt (Ingress, port %s). Fiches : %s", PANEL_PORT, COACH_DIR)
 
+    servers = [
+        uvicorn.Server(uvicorn.Config(Guard(app, token), host="0.0.0.0", port=PORT, access_log=False,
+                                      log_level=level.lower(), proxy_headers=False, **ssl_kwargs)),
+        uvicorn.Server(uvicorn.Config(build_panel(garmin, store), host="0.0.0.0", port=PANEL_PORT,
+                                      access_log=False, log_level=level.lower(), proxy_headers=False)),
+    ]
+
+    async def serve_all() -> None:
+        await asyncio.gather(*(s.serve() for s in servers))
+
+    asyncio.run(serve_all())
 
 if __name__ == "__main__":
     main()

@@ -2,3 +2,4 @@ mcp==2.3.0
 uvicorn>=0.30
 requests>=2.31
 fitdecode==0.10.0
+markdown>=3.6

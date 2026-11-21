@@ -1,5 +1,5 @@
 name: Garmin Coach MCP
-version: "0.1.1"
+version: "0.2.0"
 slug: garmin_coach_mcp
 description: Serveur MCP en lecture seule sur l'API personnelle Garmin Connect, pour le coach Claude
 url: https://github.com/INTechLucas/garmin-coach-addon
@@ -7,6 +7,10 @@ arch:
   - amd64
   - aarch64
 startup: application
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:run-fast
+panel_title: Coach
 boot: auto
 ports:
   8766/tcp: 8766

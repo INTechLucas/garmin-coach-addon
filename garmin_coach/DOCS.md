@@ -37,10 +37,23 @@ Toute requête dont l'URL ne commence pas par le jeton reçoit une erreur 404 et
 avec l'IP du client (l'IP réelle est lue dans X-Forwarded-For quand la requête vient du proxy).
 Le jeton n'est jamais écrit dans le journal, sauf à sa génération.
 
+## Panneau Coach
+
+L'add-on ajoute un panneau **Coach** dans la barre latérale de Home Assistant (aussi dans l'appli
+mobile). Il n'est accessible qu'à travers Home Assistant (Ingress) : aucun port à ouvrir.
+
+- **Semaine** (accueil) : résumé publié par le coach, volume par sport, forme jour par jour
+  (VFC, sommeil, FC de repos, Body Battery), séances prévues et activités réalisées.
+- **Séances** : séances à venir et passées.
+- **Analyses** : plan d'entraînement et analyses.
+
+Les données Garmin sont mises en cache 5 minutes pour la semaine en cours.
+
 ## Données stockées
 
 - `share/garmin-coach/fit/` : fichiers `.fit` des activités consultées (téléchargés une seule fois),
   accessibles via le partage Samba (dossier `share`).
+- `share/garmin-coach/coach/` : fiches du panneau (un dossier par type, JSON + copie `.md`).
 - `/data/access_token` : jeton généré automatiquement (si l'option est vide).
 
 ## Renouvellement de la clé Garmin
@@ -50,5 +63,7 @@ semaine avant : créez une nouvelle clé, collez-la dans `garmin_api_key` et red
 
 ## Outils exposés
 
-`list_activities`, `get_activity_summary`, `get_activity_laps`, `get_activity_streams`,
+Lecture : `list_activities`, `get_activity_summary`, `get_activity_laps`, `get_activity_streams`,
 `get_wellness`, `get_fitness_metrics`, `list_activity_types`, `garmin_get`.
+
+Fiches du panneau : `publish_fiche`, `list_fiches`, `get_fiche`, `delete_fiche`.
