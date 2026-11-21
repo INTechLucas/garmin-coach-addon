@@ -32,7 +32,7 @@ class GarminError(ToolError):
 
 
 class GarminClient:
-    def __init__(self, api_key: str, data_dir: Path, timeout: float = 30.0) -> None:
+    def __init__(self, api_key: str, fit_dir: Path, timeout: float = 30.0) -> None:
         if not api_key or not api_key.strip():
             raise GarminError("Clé API Garmin absente : renseignez 'garmin_api_key' dans la configuration de l'add-on.")
         self._api_key = api_key.strip()
@@ -41,7 +41,7 @@ class GarminClient:
         self._lock = threading.Lock()
         self._token: str | None = None
         self._token_exp: float = 0.0
-        self.fit_dir = data_dir / "fit"
+        self.fit_dir = fit_dir
         self.fit_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- authentification -------------------------------------------------

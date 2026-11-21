@@ -72,12 +72,13 @@ def _summarize(m: dict[str, Any], default_sport: str | None) -> dict[str, Any]:
         "cadence": _cadence(m, sport),
         "d_plus_m": m.get("total_ascent"),
         "d_moins_m": m.get("total_descent"),
+        "calories": m.get("total_calories"),
         "puissance_moy_w": m.get("avg_power"),
         "intensite": m.get("intensity"),
         "declencheur": m.get("lap_trigger"),
         "etape_seance": m.get("wkt_step_index"),
-        "effet_aerobie": m.get("total_training_effect"),
-        "effet_anaerobie": m.get("total_anaerobic_training_effect"),
+        "effet_aerobie": round(m["total_training_effect"], 1) if isinstance(m.get("total_training_effect"), (int, float)) else None,
+        "effet_anaerobie": round(m["total_anaerobic_training_effect"], 1) if isinstance(m.get("total_anaerobic_training_effect"), (int, float)) else None,
     }
     return {k: v for k, v in out.items() if v is not None}
 

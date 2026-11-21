@@ -10,7 +10,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from . import fit_tools
+from . import compact, fit_tools
 from .garmin import GarminClient
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
@@ -33,6 +33,9 @@ def _d(value: str | None, default: date) -> str:
     return value
 
 
+_r = compact._r
+
+
 def _fmt_s(seconds: Any) -> str | None:
     return fit_tools._fmt_s(seconds) if isinstance(seconds, (int, float)) else None
 
@@ -49,16 +52,16 @@ def compact_activity(a: dict[str, Any]) -> dict[str, Any]:
         "duree": _fmt_s(a.get("duration")),
         "duree_mouvement": _fmt_s(a.get("movingDuration")),
         **fit_tools.pace_fields(speed if isinstance(speed, (int, float)) else None, sport),
-        "fc_moy": a.get("averageHR"),
-        "fc_max": a.get("maxHR"),
-        "cadence_pas_min": a.get("averageRunningCadenceInStepsPerMinute"),
-        "d_plus_m": a.get("elevationGain"),
-        "puissance_moy_w": a.get("avgPower"),
-        "effet_aerobie": a.get("aerobicTrainingEffect"),
-        "effet_anaerobie": a.get("anaerobicTrainingEffect"),
-        "charge": a.get("activityTrainingLoad"),
+        "fc_moy": _r(a.get("averageHR")),
+        "fc_max": _r(a.get("maxHR")),
+        "cadence_pas_min": _r(a.get("averageRunningCadenceInStepsPerMinute")),
+        "d_plus_m": _r(a.get("elevationGain")),
+        "puissance_moy_w": _r(a.get("avgPower")),
+        "effet_aerobie": _r(a.get("aerobicTrainingEffect"), 1),
+        "effet_anaerobie": _r(a.get("anaerobicTrainingEffect"), 1),
+        "charge": _r(a.get("activityTrainingLoad")),
         "label_effet": a.get("trainingEffectLabel"),
-        "vo2max": a.get("vO2MaxValue"),
+        "vo2max": _r(a.get("vO2MaxValue")),
         "nb_tours": a.get("lapCount"),
         "description": a.get("description"),
     }
@@ -66,7 +69,7 @@ def compact_activity(a: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_server(garmin: GarminClient) -> MCPServer:
-    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.1.0")
+    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.1.1")
 
     @mcp.tool(annotations=RO)
     def list_activities(start_date: str | None = None, end_date: str | None = None,
@@ -108,20 +111,24 @@ def build_server(garmin: GarminClient) -> MCPServer:
         return fit_tools.streams(garmin.activity_fit(activity_id), interval_s, start_s, end_s)
 
     @mcp.tool(annotations=RO)
-    def get_wellness(start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
-        """Récupération sur une période (7 derniers jours par défaut) : résumés de sommeil, VFC (HRV),
-        résumés quotidiens (FC de repos, stress, Body Battery)."""
+    def get_wellness(start_date: str | None = None, end_date: str | None = None,
+                     brut: bool = False) -> dict[str, Any]:
+        """Récupération jour par jour (7 derniers jours par défaut), en résumé compact :
+        sommeil (durée, phases, score), VFC (nuit, moyenne 7 j, zone normale, statut),
+        journée (FC de repos, stress, Body Battery, pas, minutes intenses).
+        brut=True renvoie les réponses Garmin complètes (très volumineuses)."""
         today = date.today()
         s, e = _d(start_date, today - timedelta(days=7)), _d(end_date, today)
         out: dict[str, Any] = {}
         sources = {
-            "sommeil": ("/sleep-service/sleep/dailySleepSummariesByDate", {"startDate": s, "endDate": e}),
-            "vfc": (f"/hrv-service/hrv/daily/{s}/{e}", None),
-            "resumes_quotidiens": ("/usersummary-service/v2/dailysummaries", {"startDate": s, "endDate": e}),
+            "sommeil": ("/sleep-service/sleep/dailySleepSummariesByDate", {"startDate": s, "endDate": e}, compact.sleep),
+            "vfc": (f"/hrv-service/hrv/daily/{s}/{e}", None, compact.hrv),
+            "journees": ("/usersummary-service/v2/dailysummaries", {"startDate": s, "endDate": e}, compact.daily),
         }
-        for key, (path, params) in sources.items():
+        for key, (path, params, fmt) in sources.items():
             try:
-                out[key] = garmin.get(path, params)
+                data = garmin.get(path, params)
+                out[key] = data if brut else fmt(data)
             except Exception as exc:  # noqa: BLE001 - une source en échec ne bloque pas les autres
                 out[key] = {"erreur": str(exc)}
         return out

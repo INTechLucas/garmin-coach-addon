@@ -15,18 +15,32 @@ et vos données de récupération (sommeil, VFC, FC de repos, VO2max).
 
 ## Accès depuis l'extérieur
 
-1. Rediriger le port TCP **8766** de la box internet (et du routeur intermédiaire)
-   vers l'adresse IP de Home Assistant, port 8766.
-2. URL du connecteur à ajouter dans Claude (Paramètres > Connecteurs > Ajouter un connecteur personnalisé) :
+Les connecteurs personnalisés de Claude n'atteignent pas un port non standard comme 8766 :
+le serveur doit être exposé sur le port **443**. Si le 443 sert déjà à Home Assistant,
+passer par l'add-on officiel **NGINX Home Assistant SSL proxy** :
 
-   `https://<votre-domaine>.duckdns.org:8766/<access_token>/mcp`
+1. Options du proxy : `domain` = votre domaine, `use_ssl_backend: true` si Home Assistant fait
+   son propre HTTPS, `customize.active: true`.
+2. Déposer dans le dossier `share` un fichier `nginx_proxy_default_garmin.conf` qui envoie
+   `^/[A-Za-z0-9_-]{32,}/mcp` vers `https://<hostname-de-l-add-on>.local.hass.io:8766`
+   (voir l'exemple dans le dépôt : `examples/nginx_proxy_default_garmin.conf`).
+3. Home Assistant : activer X-Forwarded-For et déclarer `172.30.33.0/24` comme proxy de confiance
+   (Paramètres > Système > Réseau).
+4. Box/routeur : port externe 443 → port 443 de Home Assistant. Le port 8766 n'a pas besoin
+   d'être ouvert vers l'extérieur.
 
-Toute requête qui ne commence pas par le jeton reçoit une erreur 404 et est journalisée
-(adresse IP). Le jeton n'est jamais écrit dans le journal, sauf à sa génération.
+URL du connecteur dans Claude (authentification « No sign-in ») :
+
+`https://<votre-domaine>.duckdns.org/<access_token>/mcp`
+
+Toute requête dont l'URL ne commence pas par le jeton reçoit une erreur 404 et est journalisée
+avec l'IP du client (l'IP réelle est lue dans X-Forwarded-For quand la requête vient du proxy).
+Le jeton n'est jamais écrit dans le journal, sauf à sa génération.
 
 ## Données stockées
 
-- `/data/fit/` : fichiers `.fit` des activités consultées (téléchargés une seule fois).
+- `share/garmin-coach/fit/` : fichiers `.fit` des activités consultées (téléchargés une seule fois),
+  accessibles via le partage Samba (dossier `share`).
 - `/data/access_token` : jeton généré automatiquement (si l'option est vide).
 
 ## Renouvellement de la clé Garmin
