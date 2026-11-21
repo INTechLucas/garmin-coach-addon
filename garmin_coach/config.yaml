@@ -1,0 +1,31 @@
+name: Garmin Coach MCP
+version: "0.1.0"
+slug: garmin_coach_mcp
+description: Serveur MCP en lecture seule sur l'API personnelle Garmin Connect, pour le coach Claude
+url: https://github.com/INTechLucas/garmin-coach-addon
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+ports:
+  8766/tcp: 8766
+ports_description:
+  8766/tcp: Serveur MCP (HTTPS)
+map:
+  - type: ssl
+    read_only: true
+options:
+  garmin_api_key: ""
+  access_token: ""
+  ssl: true
+  certfile: fullchain.pem
+  keyfile: privkey.pem
+  log_level: info
+schema:
+  garmin_api_key: password
+  access_token: "password?"
+  ssl: bool
+  certfile: str
+  keyfile: str
+  log_level: list(debug|info|warning|error)

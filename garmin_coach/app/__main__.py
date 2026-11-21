@@ -1,0 +1,99 @@
+"""Point d'entrée de l'add-on : lit la configuration et lance le serveur MCP en HTTPS."""
+
+from __future__ import annotations
+
+import hmac
+import json
+import logging
+import os
+import secrets
+from pathlib import Path
+
+import uvicorn
+from mcp.server.transport_security import TransportSecuritySettings
+
+from .garmin import GarminClient
+from .server import build_server
+
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+OPTIONS_FILE = Path(os.environ.get("OPTIONS_FILE", DATA_DIR / "options.json"))
+SSL_DIR = Path(os.environ.get("SSL_DIR", "/ssl"))
+PORT = int(os.environ.get("PORT", "8766"))
+
+LOG = logging.getLogger("garmin_coach")
+
+
+def load_access_token(options: dict) -> str:
+    token = (options.get("access_token") or "").strip()
+    if token:
+        if len(token) < 32 or not token.replace("-", "").replace("_", "").isalnum():
+            raise SystemExit("access_token doit faire au moins 32 caractères (lettres, chiffres, - ou _).")
+        return token
+    stored = DATA_DIR / "access_token"
+    if stored.exists():
+        return stored.read_text().strip()
+    token = secrets.token_urlsafe(32)
+    fd = os.open(stored, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    LOG.warning("Jeton d'accès généré automatiquement (affiché une seule fois) : %s", token)
+    LOG.warning("Copiez-le dans l'option 'access_token' de l'add-on pour le conserver de façon visible.")
+    return token
+
+
+class Guard:
+    """Ne laisse passer que les requêtes dont le premier segment d'URL est le jeton secret."""
+
+    def __init__(self, app, token: str) -> None:
+        self.app, self.token = app, token.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan":
+            return await self.app(scope, receive, send)
+        client = (scope.get("client") or ("?",))[0]
+        segment = scope.get("path", "").lstrip("/").split("/", 1)[0]
+        if scope["type"] != "http" or not hmac.compare_digest(segment.encode(), self.token):
+            LOG.warning("Requête refusée depuis %s (%s %s…)", client, scope.get("method", scope["type"]),
+                        scope.get("path", "")[:8])
+            if scope["type"] == "http":
+                await send({"type": "http.response.start", "status": 404,
+                            "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"Not found"})
+            return None
+        LOG.info("%s %s /<jeton>/%s", client, scope["method"], scope["path"].split("/", 2)[-1])
+        return await self.app(scope, receive, send)
+
+
+def main() -> None:
+    options = json.loads(OPTIONS_FILE.read_text()) if OPTIONS_FILE.exists() else {}
+    level = str(options.get("log_level", "info")).upper()
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    token = load_access_token(options)
+    garmin = GarminClient(options.get("garmin_api_key", ""), DATA_DIR)
+    mcp = build_server(garmin)
+    app = mcp.streamable_http_app(
+        streamable_http_path=f"/{token}/mcp",
+        stateless_http=True,
+        json_response=True,
+        host="0.0.0.0",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
+    ssl_kwargs = {}
+    if options.get("ssl", True):
+        cert, key = SSL_DIR / options.get("certfile", "fullchain.pem"), SSL_DIR / options.get("keyfile", "privkey.pem")
+        if not cert.exists() or not key.exists():
+            raise SystemExit(f"Certificat introuvable ({cert}, {key}) : vérifiez l'add-on Let's Encrypt / Duck DNS.")
+        ssl_kwargs = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+
+    LOG.info("Serveur MCP Garmin prêt sur le port %s. URL du connecteur : %s://<votre-domaine>:%s/%s…/mcp "
+             "(jeton complet dans la configuration de l'add-on ou /data/access_token)",
+             PORT, "https" if ssl_kwargs else "http", PORT, token[:4])
+    uvicorn.run(Guard(app, token), host="0.0.0.0", port=PORT, access_log=False,
+                log_level=level.lower(), proxy_headers=False, **ssl_kwargs)
+
+
+if __name__ == "__main__":
+    main()

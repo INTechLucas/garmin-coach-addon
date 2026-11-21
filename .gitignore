@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.fit
+options.json
+access_token
