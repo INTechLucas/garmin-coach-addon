@@ -25,6 +25,8 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _WEEK = re.compile(r"^\d{4}-W\d{2}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MAX_CONTENT = 60_000
+SPORTS_SEANCE = ("course", "natation", "swimrun", "renfo", "velo")
+INTENSITES = ("facile", "dure", "longue", "force", "renfo", "technique")
 
 
 def iso_week(d: date) -> str:
@@ -50,7 +52,7 @@ def slugify(text: str) -> str:
 class FicheStore:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         for t in TYPES:
             (root / t).mkdir(parents=True, exist_ok=True)
 
@@ -94,8 +96,13 @@ class FicheStore:
 
     # ---- écriture ---------------------------------------------------------
     def save(self, *, type_: str, titre: str, contenu: str, resume: str | None = None,
-             date_: str | None = None, semaine: str | None = None, fiche_id: str | None = None) -> dict[str, Any]:
+             date_: str | None = None, semaine: str | None = None, fiche_id: str | None = None,
+             sport: str | None = None, intensite: str | None = None) -> dict[str, Any]:
         self._check_type(type_)
+        if sport and sport not in SPORTS_SEANCE:
+            raise ToolError(f"sport doit être l'un de : {', '.join(SPORTS_SEANCE)}")
+        if intensite and intensite not in INTENSITES:
+            raise ToolError(f"intensite doit être l'une de : {', '.join(INTENSITES)}")
         titre = (titre or "").strip()
         if not titre:
             raise ToolError("titre obligatoire")
@@ -130,12 +137,37 @@ class FicheStore:
                 "cree_le": old["cree_le"] if old else now,
                 "mis_a_jour": now,
             }
-            p = self._path(type_, fiche_id)
-            tmp = p.with_suffix(".tmp")
-            tmp.write_text(json.dumps(fiche, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(p)
-            p.with_suffix(".md").write_text(f"# {titre}\n\n{contenu}\n", encoding="utf-8")
+            if type_ == "seance":
+                fiche["sport"] = sport or (old or {}).get("sport")
+                fiche["intensite"] = intensite or (old or {}).get("intensite")
+            self._write(fiche)
         return {"id": fiche_id, "type": type_, "statut": "mise à jour" if old else "créée", "semaine": semaine}
+
+    def _write(self, fiche: dict[str, Any]) -> None:
+        p = self._path(fiche["type"], fiche["id"])
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(fiche, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(p)
+        p.with_suffix(".md").write_text(f"# {fiche['titre']}\n\n{fiche['contenu']}\n", encoding="utf-8")
+
+    def patch(self, type_: str, fiche_id: str, *, date_: str | None = None, semaine: str | None = None,
+              **meta: Any) -> dict[str, Any]:
+        """Modifie la date ou les métadonnées d'une fiche sans toucher à son contenu."""
+        with self._lock:
+            f = self.get(type_, fiche_id)
+            if f is None:
+                raise ToolError(f"Aucune fiche {type_}/{fiche_id}")
+            if date_:
+                if not _DATE.match(date_):
+                    raise ToolError("date attendue au format AAAA-MM-JJ")
+                f["date"] = date_
+                f["semaine"] = semaine or iso_week(date.fromisoformat(date_))
+            for k, v in meta.items():
+                if v is not None:
+                    f[k] = v
+            f["mis_a_jour"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._write(f)
+        return f
 
     def delete(self, type_: str, fiche_id: str) -> bool:
         p = self._path(self._check_type(type_), self._check_id(fiche_id))

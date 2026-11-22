@@ -1,4 +1,4 @@
-"""Panneau « Coach » servi via l'Ingress de Home Assistant (lecture seule)."""
+"""Panneau « Coach » servi via l'Ingress de Home Assistant : semaine, séances, suivi et ressenti."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from . import compact
 from .fiches import TYPES, FicheStore, iso_week, week_bounds
 from .garmin import GarminClient
 from .server import compact_activity
+from .suivi import DOULEURS, SuiviStore
 
 LOG = logging.getLogger("garmin_coach.panel")
 STATIC = Path(__file__).parent / "static"
@@ -86,19 +87,34 @@ def _sec(a: dict[str, Any]) -> float:
     return float(d) if isinstance(d, (int, float)) else 0.0
 
 
-def build_panel(garmin: GarminClient, store: FicheStore) -> Starlette:
-    cache = TTLCache()
+def week_activities(garmin: GarminClient, cache: "TTLCache", week: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Activités brutes et compactes (avec groupe de sport et durée en s) d'une semaine ISO."""
+    start, end = week_bounds(week)
+    ttl = 300 if start <= date.today() <= end else 6 * 3600
+
+    def acts() -> list[dict[str, Any]]:
+        data = garmin.search_activities(0, 100, start.isoformat(), end.isoformat(), None)
+        items = data if isinstance(data, list) else (data or {}).get("activityList", [])
+        return [a for a in items if isinstance(a, dict)]
+
+    raw = cache.get(f"acts:{week}", ttl, acts)
+    out = []
+    for a in sorted(raw, key=lambda a: a.get("startTimeLocal") or ""):
+        c = compact_activity(a)
+        c["groupe"] = sport_group(c.get("sport"))
+        c["duree_s"] = _sec(a)
+        out.append(c)
+    return raw, out
+
+
+def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: "TTLCache | None" = None) -> Starlette:
+    cache = cache or TTLCache()
 
     def week_data(week: str) -> dict[str, Any]:
         start, end = week_bounds(week)
         current = start <= date.today() <= end
         ttl = 300 if current else 6 * 3600
         errors: list[str] = []
-
-        def acts() -> list[dict[str, Any]]:
-            data = garmin.search_activities(0, 100, start.isoformat(), end.isoformat(), None)
-            items = data if isinstance(data, list) else (data or {}).get("activityList", [])
-            return [a for a in items if isinstance(a, dict)]
 
         def forme() -> dict[str, Any]:
             s, e = start.isoformat(), min(end, date.today()).isoformat()
@@ -116,24 +132,28 @@ def build_panel(garmin: GarminClient, store: FicheStore) -> Starlette:
             return out
 
         try:
-            raw = cache.get(f"acts:{week}", ttl, acts)
+            raw, activites = week_activities(garmin, cache, week)
+            ok = True
         except Exception as exc:  # noqa: BLE001
-            raw = []
+            raw, activites, ok = [], [], False
             errors.append(f"activités : {exc}")
         f = cache.get(f"forme:{week}", ttl, forme) if start <= date.today() else {}
 
-        activites, totaux = [], {}
-        for a in sorted(raw, key=lambda a: a.get("startTimeLocal") or ""):
-            c = compact_activity(a)
-            g = sport_group(c.get("sport"))
-            c["groupe"] = g
-            activites.append(c)
+        totaux = {}
+        for a, c in zip(sorted(raw, key=lambda a: a.get("startTimeLocal") or ""), activites):
+            g = c["groupe"]
             t = totaux.setdefault(g, {"libelle": SPORTS.get(g, ("Autre",))[0], "seances": 0, "duree_s": 0.0,
                                       "distance_km": 0.0, "charge": 0})
             t["seances"] += 1
             t["duree_s"] += _sec(a)
             t["distance_km"] += (a.get("distance") or 0) / 1000
             t["charge"] += int(round(a.get("activityTrainingLoad") or 0))
+        if ok:
+            suivi.sync(week, activites)
+        planning = suivi.vue(week, activites)
+        fiches_seances = {x["id"]: fiche_out(x) for x in store.list("seance", week)}
+        for item in planning["seances"]:
+            item["fiche"] = fiches_seances.get(item["id"])
 
         jours = []
         by = {k: {x.get("date"): x for x in (f.get(k) or []) if isinstance(x, dict)} for k in ("sommeil", "vfc", "journees")}
@@ -153,7 +173,8 @@ def build_panel(garmin: GarminClient, store: FicheStore) -> Starlette:
             "semaine": week, "debut": start.isoformat(), "fin": end.isoformat(), "courante": current,
             "precedente": iso_week(start - timedelta(days=7)), "suivante": iso_week(start + timedelta(days=7)),
             "fiche": fiche_out(fiche) if fiche else None,
-            "seances_prevues": [fiche_out(x) for x in store.list("seance", week)],
+            "planning": planning,
+            "douleurs": list(DOULEURS),
             "activites": activites,
             "totaux": {
                 "seances": len(activites),
@@ -185,13 +206,84 @@ def build_panel(garmin: GarminClient, store: FicheStore) -> Starlette:
     def api_semaines(request: Request):
         return JSONResponse({"fiches": [fiche_out(f, with_html=False) for f in store.list("semaine")]})
 
+    async def _body(request: Request) -> dict[str, Any]:
+        try:
+            data = await request.json()
+        except ValueError:
+            data = None
+        return data if isinstance(data, dict) else {}
+
+    def _err(exc: Exception) -> JSONResponse:
+        return JSONResponse({"erreur": str(exc)}, status_code=400)
+
+    async def api_deplacer(request: Request):
+        b = await _body(request)
+        try:
+            res = suivi.deplacer(request.path_params["sid"], str(b.get("date", "")),
+                                 simuler=bool(b.get("simuler")))
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            return _err(exc)
+        return JSONResponse(res)
+
+    async def api_ressenti(request: Request):
+        b = await _body(request)
+        try:
+            rpe = b.get("rpe")
+            res = suivi.ressenti(activity_id=b.get("activity_id"), seance_id=b.get("seance_id"),
+                                 rpe=int(rpe) if rpe not in (None, "") else None,
+                                 douleurs=[str(x) for x in (b.get("douleurs") or [])][:10], note=str(b.get("note") or ""))
+        except (ValueError, TypeError) as exc:
+            return _err(exc)
+        return JSONResponse(res)
+
+    async def api_associer(request: Request):
+        b = await _body(request)
+        try:
+            res = suivi.associer(str(b.get("activity_id") or ""), b.get("seance_id") or None)
+        except ValueError as exc:
+            return _err(exc)
+        return JSONResponse(res)
+
+    async def api_fait(request: Request):
+        b = await _body(request)
+        try:
+            suivi.fait_manuel(request.path_params["sid"], bool(b.get("fait", True)))
+        except ValueError as exc:
+            return _err(exc)
+        return JSONResponse({"ok": True})
+
     app = Starlette(routes=[
         Route("/", index),
         Route("/api/semaine", api_semaine),
         Route("/api/fiches", api_fiches),
         Route("/api/semaines", api_semaines),
+        Route("/api/seance/{sid}/deplacer", api_deplacer, methods=["POST"]),
+        Route("/api/seance/{sid}/fait", api_fait, methods=["POST"]),
+        Route("/api/ressenti", api_ressenti, methods=["POST"]),
+        Route("/api/associer", api_associer, methods=["POST"]),
     ])
     return IngressOnly(app)
+
+
+def sync_week(garmin: GarminClient, suivi: SuiviStore, cache: TTLCache, week: str) -> None:
+    _, activites = week_activities(garmin, cache, week)
+    suivi.sync(week, activites)
+
+
+def sync_loop(garmin: GarminClient, suivi: SuiviStore, cache: TTLCache, interval_s: int = 1800) -> None:
+    """Synchro en tâche de fond : associe les nouvelles activités aux séances et alimente la file du coach."""
+    time.sleep(20)
+    while True:
+        today = date.today()
+        weeks = [iso_week(today)]
+        if today.weekday() <= 1:  # lundi/mardi : on finit aussi la semaine précédente
+            weeks.insert(0, iso_week(today - timedelta(days=7)))
+        for w in weeks:
+            try:
+                sync_week(garmin, suivi, cache, w)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("Synchro du suivi (%s) en échec : %s", w, exc)
+        time.sleep(interval_s)
 
 
 class IngressOnly:

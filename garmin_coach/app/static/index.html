@@ -87,6 +87,54 @@
   .err { background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
   .loading { color: var(--ink3); padding: 30px 0; text-align: center; }
   .updated { color: var(--ink3); font-size: 12px; margin-top: 8px; }
+  .plan-day { display: flex; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .plan-day:first-of-type { border-top: 0; padding-top: 2px; }
+  .plan-day.today .day b { color: var(--accent); }
+  .plan-day .day { width: 38px; flex: none; text-align: center; color: var(--ink3); font-size: 12px; line-height: 1.2; }
+  .plan-day .day b { display: block; color: var(--ink); font-size: 17px; }
+  .plan-day .items { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .plan-day .repos { color: var(--ink3); font-size: 13.5px; padding-top: 6px; }
+  .sc { border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; }
+  .sc.realisee { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .sc.manquee { opacity: .75; }
+  .sc .top { display: flex; align-items: flex-start; gap: 8px; }
+  .sc .top .tt { flex: 1; min-width: 0; font-weight: 600; }
+  .badge { font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--ink2); }
+  .badge.realisee { background: var(--ok-soft); color: var(--ok); }
+  .badge.manquee { background: var(--warn-soft); color: var(--warn); }
+  .badge.aujourdhui { background: var(--accent-soft); color: var(--accent); }
+  .sc .sub { color: var(--ink3); font-size: 12.5px; margin-top: 2px; }
+  .sc .bilan { color: var(--ink2); font-size: 13.5px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .ok-t { color: var(--ok); font-weight: 600; } .ko-t { color: var(--warn); font-weight: 600; }
+  .sc .ress { font-size: 13px; color: var(--ink2); margin-top: 4px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .actions button, .btn { border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; font-size: 13px;
+    font-weight: 600; padding: 6px 11px; border-radius: 9px; cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--card); }
+  .sc details { margin-top: 6px; } .sc details summary { cursor: pointer; color: var(--accent); font-size: 13px; font-weight: 600; }
+  .alerte { background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: 8px 12px; font-size: 13.5px; margin-bottom: 8px; }
+  .attente { background: var(--accent-soft); color: var(--accent); border-radius: 10px; padding: 8px 12px; font-size: 13.5px; margin-bottom: 12px; font-weight: 600; }
+  dialog { border: 0; border-radius: 18px; padding: 0; width: min(440px, calc(100vw - 24px)); background: var(--card); color: var(--ink); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog .dlg { padding: 16px; }
+  dialog h3 { margin: 0 0 4px; font-size: 17px; }
+  dialog .hint { color: var(--ink3); font-size: 13px; margin: 0 0 12px; }
+  dialog label.lb { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink3); font-weight: 700; margin: 12px 0 6px; }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .grid7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt { border: 1px solid var(--line); background: var(--chip); color: var(--ink); font: inherit; font-size: 13.5px; font-weight: 600;
+    padding: 8px 4px; border-radius: 10px; cursor: pointer; text-align: center; }
+  .chips .opt { padding: 6px 11px; }
+  .opt[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--card); }
+  .opt:disabled { opacity: .35; cursor: default; }
+  .opt small { display: block; font-weight: 500; font-size: 11px; }
+  dialog textarea { width: 100%; min-height: 70px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink);
+    font: inherit; padding: 8px 10px; resize: vertical; }
+  dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .rpe-l { display: flex; justify-content: space-between; color: var(--ink3); font-size: 11.5px; margin-top: 4px; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 16px;
+    border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 10; }
   @media (max-width: 380px) { .forme { grid-template-columns: 54px repeat(7, 1fr); font-size: 11.5px; } }
 </style>
 </head>
@@ -100,6 +148,7 @@
   </div>
   <main id="view"><div class="loading">Chargement…</div></main>
 </div>
+<dialog id="dlg"><form method="dialog" class="dlg" id="dlgbody"></form></dialog>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
@@ -112,7 +161,8 @@ const d = iso => new Date(iso + "T12:00:00");
 const fmtDay = iso => { const x = d(iso); return `${x.getDate()} ${MOIS[x.getMonth()]}`; };
 const fmtDur = s => { const m = Math.round(s / 60); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}` : `${m} min`; };
 const km = v => v ? `${v.toFixed(1).replace(".", ",")} km` : "";
-const today = new Date().toISOString().slice(0, 10);
+const _n = new Date();
+const today = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}-${String(_n.getDate()).padStart(2, "0")}`;
 
 async function api(path) {
   const r = await fetch(path, { headers: { Accept: "application/json" } });
@@ -179,9 +229,183 @@ function activitesHTML(acts) {
   }).join("");
 }
 
+
+const SPORT_LIB = { course: "Course", natation: "Natation", swimrun: "Swimrun", renfo: "Renfo", velo: "Vélo" };
+const INT_LIB = { facile: "facile", dure: "qualité", longue: "longue", force: "force", renfo: "renfo", technique: "technique" };
+const STATUT_LIB = { realisee: "✓ Faite", manquee: "Non faite", aujourdhui: "Aujourd'hui", prevue: "Prévue" };
+const DOUL_LIB = { mollet: "Mollet", achille: "Achille", pied: "Pied", genou: "Genou", hanche: "Hanche", ischios: "Ischios", dos: "Dos", epaule: "Épaule", autre: "Autre" };
+const JOURS_LONG = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
+const jourLong = iso => { const x = d(iso); return `${JOURS_LONG[(x.getDay() + 6) % 7]} ${x.getDate()}`; };
+let W = null;
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.erreur || `HTTP ${r.status}`);
+  return j;
+}
+function toast(msg) {
+  const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+function bilanHTML(s) {
+  const a = s.activite; if (!a) return "";
+  const allure = a.allure_100m ? a.allure_100m + " /100 m" : (a.allure_min_km && s.sport !== "renfo" ? a.allure_min_km + " /km" : "");
+  let fc = "";
+  if (a.fc_moy) {
+    fc = `FC ${a.fc_moy}`;
+    if (s.fc_cible) fc += a.fc_moy <= s.fc_cible ? ` <span class="ok-t">(cible ≤ ${s.fc_cible} ✓)</span>` : ` <span class="ko-t">(cible ≤ ${s.fc_cible})</span>`;
+  }
+  const parts = [km(a.distance_km), a.duree, allure].filter(Boolean).map(esc);
+  if (fc) parts.push(fc);
+  return `<div class="bilan">${parts.join(" · ")}</div>`;
+}
+function ressentiHTML(r) {
+  if (!r) return "";
+  const p = [r.rpe ? `Effort ${r.rpe}/10` : null, r.douleurs && r.douleurs.length ? "Douleur : " + r.douleurs.map(x => DOUL_LIB[x] || x).join(", ") : null,
+             r.note ? `« ${r.note} »` : null].filter(Boolean);
+  return `<div class="ress">💬 ${esc(p.join(" · ") || "Rien à signaler")}</div>`;
+}
+
+function seanceCard(s) {
+  const f = s.fiche || {};
+  const sub = [`${SPORT_LIB[s.sport] || s.sport} · ${INT_LIB[s.intensite] || s.intensite}`];
+  if (s.date_initiale && s.date_initiale !== s.date) sub.push(`déplacée (prévue ${jourLong(s.date_initiale)})`);
+  if (s.date_realisee && s.date_realisee !== s.date) sub.push(`faite ${jourLong(s.date_realisee)}`);
+  if (s.fait_manuel && !s.activite) sub.push("cochée sans montre");
+  const acts = [];
+  if (s.statut === "realisee") acts.push(`<button type="button" data-act="ressenti" data-sid="${esc(s.id)}" data-aid="${esc(s.activite ? s.activite.activity_id : "")}">${s.ressenti ? "Modifier le ressenti" : "Mon ressenti"}</button>`);
+  if (s.statut !== "realisee") acts.push(`<button type="button" data-act="deplacer" data-sid="${esc(s.id)}">Déplacer</button>`);
+  if (s.statut !== "realisee" && s.statut !== "prevue") acts.push(`<button type="button" data-act="fait" data-sid="${esc(s.id)}">Faite sans montre</button>`);
+  if (s.fait_manuel && !s.activite) acts.push(`<button type="button" data-act="defait" data-sid="${esc(s.id)}">Annuler</button>`);
+  return `<div class="sc ${s.statut}"><div class="top"><div class="tt">${esc(f.titre || s.id)}</div><span class="badge ${s.statut}">${STATUT_LIB[s.statut]}</span></div>
+    <div class="sub">${esc(sub.join(" · "))}</div>
+    ${s.statut !== "realisee" && f.resume ? `<div class="bilan">${esc(f.resume)}</div>` : ""}
+    ${bilanHTML(s)}${ressentiHTML(s.ressenti)}
+    <div class="actions">${acts.join("")}</div>
+    ${f.html ? `<details><summary>Détail de la séance</summary><div class="md">${f.html}</div></details>` : ""}</div>`;
+}
+
+function horsPlanCard(h) {
+  const a = h.activite;
+  const meta = [km(a.distance_km), a.duree, a.allure_min_km && a.groupe !== "renfo" ? a.allure_min_km + " /km" : "", a.fc_moy ? `FC ${a.fc_moy}` : ""].filter(Boolean).join(" · ");
+  return `<div class="sc"><div class="top"><div class="tt">${esc(a.nom || a.sport)}</div><span class="badge">Hors plan</span></div>
+    <div class="sub">${esc(jourLong(a.date_locale.slice(0, 10)))}</div><div class="bilan">${esc(meta)}</div>${ressentiHTML(h.ressenti)}
+    <div class="actions"><button type="button" data-act="ressenti" data-aid="${esc(a.activity_id)}">${h.ressenti ? "Modifier le ressenti" : "Mon ressenti"}</button>
+    ${W.planning.seances.length ? `<button type="button" data-act="associer" data-aid="${esc(a.activity_id)}">C'était une séance du plan</button>` : ""}</div></div>`;
+}
+
+function planningHTML(w) {
+  const p = w.planning;
+  if (!p.seances.length && !p.hors_plan.length) return "";
+  let h = `<div class="section-title">Séances de la semaine</div>`;
+  if (p.en_attente) h += `<div class="attente">${p.en_attente} élément${p.en_attente > 1 ? "s" : ""} en attente du point du soir avec le coach</div>`;
+  h += p.alertes.map(a => `<div class="alerte">⚠️ ${esc(a.texte)}</div>`).join("");
+  h += `<section class="card">`;
+  for (let i = 0; i < 7; i++) {
+    const day = new Date(d(w.debut).getTime() + i * 86400000);
+    const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    const items = p.seances.filter(s => s.date === iso).map(seanceCard)
+      .concat(p.hors_plan.filter(x => x.activite.date_locale.slice(0, 10) === iso).map(horsPlanCard));
+    h += `<div class="plan-day${iso === today ? " today" : ""}"><div class="day">${JOURS[i]}<b>${day.getDate()}</b></div>
+      <div class="items">${items.length ? items.join("") : `<div class="repos">Repos</div>`}</div></div>`;
+  }
+  return h + `</section>`;
+}
+
+// ---- dialogues --------------------------------------------------------------
+const dlg = $("#dlg"), dlgBody = $("#dlgbody");
+function openDlg(html, onSubmit) {
+  dlgBody.innerHTML = html;
+  dlgBody.onsubmit = async ev => {
+    ev.preventDefault();
+    if (ev.submitter && ev.submitter.value === "annuler") { dlg.close(); return; }
+    try { await onSubmit(); dlg.close(); render(); } catch (e) { toast(e.message); }
+  };
+  dlg.showModal();
+}
+function toggleGroup(root, sel, multi) {
+  root.querySelectorAll(sel).forEach(b => b.addEventListener("click", () => {
+    if (!multi) root.querySelectorAll(sel).forEach(x => x.setAttribute("aria-pressed", "false"));
+    b.setAttribute("aria-pressed", multi ? String(b.getAttribute("aria-pressed") !== "true") : "true");
+  }));
+}
+
+function dlgRessenti(sid, aid) {
+  const all = W.planning.seances.concat(W.planning.hors_plan.map(h => ({ ressenti: h.ressenti, activite: h.activite })));
+  const cur = (all.find(x => (aid && x.activite && String(x.activite.activity_id) === String(aid)) || (!aid && x.id === sid)) || {}).ressenti || {};
+  const rpe = [1,2,3,4,5,6,7,8,9,10].map(n => `<button type="button" class="opt rpe" data-v="${n}" aria-pressed="${cur.rpe === n}">${n}</button>`).join("");
+  const doul = W.douleurs.map(k => `<button type="button" class="opt doul" data-v="${k}" aria-pressed="${(cur.douleurs || []).includes(k)}">${DOUL_LIB[k] || k}</button>`).join("");
+  openDlg(`<h3>Mon ressenti</h3><p class="hint">Ce que la montre ne voit pas. Ton coach le lira au point du soir.</p>
+    <label class="lb">Effort perçu</label><div class="grid">${rpe}</div><div class="rpe-l"><span>1 très facile</span><span>10 maximal</span></div>
+    <label class="lb">Douleur ou gêne</label><div class="chips">${doul}</div>
+    <label class="lb">Note</label><textarea id="note" maxlength="600" placeholder="Sensations, contexte, fatigue…">${esc(cur.note || "")}</textarea>
+    <div class="foot"><button class="btn" value="annuler">Annuler</button><button class="btn primary" value="ok">Envoyer</button></div>`,
+    async () => {
+      const r = dlgBody.querySelector(".rpe[aria-pressed=true]");
+      await post("api/ressenti", { activity_id: aid || null, seance_id: sid || null, rpe: r ? Number(r.dataset.v) : null,
+        douleurs: [...dlgBody.querySelectorAll(".doul[aria-pressed=true]")].map(b => b.dataset.v), note: $("#note", dlgBody).value });
+      toast("Ressenti envoyé au coach");
+    });
+  toggleGroup(dlgBody, ".rpe", false); toggleGroup(dlgBody, ".doul", true);
+}
+
+function dlgDeplacer(sid) {
+  const s = W.planning.seances.find(x => x.id === sid);
+  const days = [...Array(7)].map((_, i) => { const x = new Date(d(W.debut).getTime() + i * 86400000);
+    return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; });
+  const btns = days.map((iso, i) => `<button type="button" class="opt day" data-v="${iso}" aria-pressed="${iso === s.date}"${iso < today ? " disabled" : ""}>${JOURS[i]}<small>${d(iso).getDate()}</small></button>`).join("");
+  openDlg(`<h3>Déplacer « ${esc(s.fiche ? s.fiche.titre : sid)} »</h3><p class="hint">Dans cette semaine uniquement. Pour la semaine suivante, passe par le chat avec ton coach.</p>
+    <div class="grid7">${btns}</div><div id="preview" style="margin-top:12px"></div>
+    <div class="foot"><button class="btn" value="annuler">Annuler</button><button class="btn primary" value="ok">Déplacer</button></div>`,
+    async () => {
+      const b = dlgBody.querySelector(".day[aria-pressed=true]");
+      if (!b || b.dataset.v === s.date) return;
+      const res = await post(`api/seance/${encodeURIComponent(sid)}/deplacer`, { date: b.dataset.v });
+      toast(res.alertes.length ? "Déplacée — attention à l'enchaînement" : "Séance déplacée");
+    });
+  toggleGroup(dlgBody, ".day", false);
+  dlgBody.querySelectorAll(".day").forEach(b => b.addEventListener("click", async () => {
+    const pv = $("#preview", dlgBody);
+    if (b.dataset.v === s.date) { pv.innerHTML = ""; return; }
+    try {
+      const res = await post(`api/seance/${encodeURIComponent(sid)}/deplacer`, { date: b.dataset.v, simuler: true });
+      pv.innerHTML = res.alertes.length ? res.alertes.map(a => `<div class="alerte">⚠️ ${esc(a.texte)}</div>`).join("")
+        : `<div class="hint">✓ Aucun enchaînement à risque ${esc(jourLong(b.dataset.v))}.</div>`;
+    } catch (e) { pv.innerHTML = `<div class="alerte">${esc(e.message)}</div>`; }
+  }));
+}
+
+function dlgAssocier(aid) {
+  const opts = W.planning.seances.map(s => `<button type="button" class="opt seance" data-v="${esc(s.id)}" aria-pressed="false" style="text-align:left;padding:8px 10px">${esc(s.fiche ? s.fiche.titre : s.id)}<small>${esc(jourLong(s.date))}${s.statut === "realisee" ? " · déjà faite" : ""}</small></button>`).join("");
+  openDlg(`<h3>C'était quelle séance ?</h3><p class="hint">Associe cette activité à une séance du plan.</p>
+    <div style="display:flex;flex-direction:column;gap:6px">${opts}</div>
+    <div class="foot"><button class="btn" value="annuler">Annuler</button><button class="btn primary" value="ok">Associer</button></div>`,
+    async () => {
+      const b = dlgBody.querySelector(".seance[aria-pressed=true]");
+      if (!b) return;
+      await post("api/associer", { activity_id: aid, seance_id: b.dataset.v });
+      toast("Activité associée");
+    });
+  toggleGroup(dlgBody, ".seance", false);
+}
+
+view.addEventListener("click", async ev => {
+  const b = ev.target.closest("button[data-act]"); if (!b) return;
+  const { act, sid, aid } = b.dataset;
+  if (act === "ressenti") dlgRessenti(sid, aid);
+  else if (act === "deplacer") dlgDeplacer(sid);
+  else if (act === "associer") dlgAssocier(aid);
+  else if (act === "fait" || act === "defait") {
+    try { await post(`api/seance/${encodeURIComponent(sid)}/fait`, { fait: act === "fait" }); toast(act === "fait" ? "Séance cochée" : "Annulé"); render(); }
+    catch (e) { toast(e.message); }
+  }
+});
+
 async function renderSemaine() {
   const w = await api("api/semaine" + (state.week ? "?w=" + encodeURIComponent(state.week) : ""));
-  state.week = w.semaine;
+  state.week = w.semaine; W = w;
   const t = w.totaux, max = Math.max(1, ...t.par_sport.map(s => s.duree_s));
   let h = `<div class="weeknav"><button id="prev" aria-label="Semaine précédente">‹</button>
     <div class="label">${weekLabel(w)}</div>
@@ -191,6 +415,7 @@ async function renderSemaine() {
       ? `${w.fiche.resume ? `<p class="resume">${esc(w.fiche.resume)}</p>` : ""}<div class="md">${w.fiche.html}</div>
          <div class="updated">Mis à jour le ${fmtDay(w.fiche.mis_a_jour.slice(0, 10))}</div>`
       : `<p class="empty">Pas encore de résumé pour cette semaine. Il apparaîtra ici dès que ton coach l'aura publié.</p>`}</section>`;
+  h += planningHTML(w);
   h += `<section class="card"><h2>Volume</h2><div class="stats">
       <div class="stat"><b>${t.seances}</b><span>séance${t.seances > 1 ? "s" : ""}</span></div>
       <div class="stat"><b>${t.duree_s ? fmtDur(t.duree_s) : "0 min"}</b><span>durée totale</span></div>
@@ -199,8 +424,7 @@ async function renderSemaine() {
         <span class="n">${esc(s.libelle)}</span><span class="v">${[s.distance_km >= 0.1 ? km(s.distance_km) : "", fmtDur(s.duree_s)].filter(Boolean).join(" · ")}</span></div>
         <div class="bar"><i style="width:${(100 * s.duree_s / max).toFixed(0)}%;background:var(--${groupKey(s.libelle)})"></i></div></div>`).join("")}</div></section>`;
   h += `<section class="card"><h2>Forme</h2>${formeHTML(w.jours)}</section>`;
-  if (w.seances_prevues.length) h += `<div class="section-title">Séances de la semaine</div>` + w.seances_prevues.map(f => ficheHTML(f)).join("");
-  h += `<section class="card"><h2>Activités</h2>${activitesHTML(w.activites)}</section>`;
+  h += `<section class="card"><h2>Toutes les activités</h2>${activitesHTML(w.activites)}</section>`;
   view.innerHTML = h;
   $("#prev").onclick = () => { state.week = w.precedente; render(); };
   $("#next").onclick = () => { if (!w.courante) { state.week = w.suivante; render(); } };

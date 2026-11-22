@@ -11,8 +11,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from . import compact, fit_tools
-from .fiches import TYPES, FicheStore
+from .fiches import INTENSITES, SPORTS_SEANCE, TYPES, FicheStore, iso_week
 from .garmin import GarminClient
+from .suivi import SuiviStore
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -27,7 +28,12 @@ INSTRUCTIONS = (
     "get_wellness pour la récupération (sommeil, VFC, FC repos). "
     "Les fiches de coaching (résumé de la semaine, séances, analyses, plan) se publient avec "
     "publish_fiche : elles s'affichent dans le panneau « Coach » de Home Assistant que l'athlète "
-    "consulte sur son téléphone. Écrire en Markdown, court et lisible sur mobile."
+    "consulte sur son téléphone. Écrire en Markdown, court et lisible sur mobile. "
+    "Pour les séances, renseigner sport et intensite (utilisés pour le suivi et les alertes d'enchaînement). "
+    "Le panneau associe automatiquement les activités Garmin aux séances prévues (même un autre jour de la "
+    "semaine), recueille le ressenti de l'athlète et lui permet de déplacer une séance dans la semaine : "
+    "tout cela arrive dans une file d'événements (list_evenements) à traiter lors du point du soir, "
+    "avec get_suivi_semaine pour la vue d'ensemble, puis marquer_evenements_traites."
 )
 
 
@@ -74,8 +80,8 @@ def compact_activity(a: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in out.items() if v not in (None, "")}
 
 
-def build_server(garmin: GarminClient, store: FicheStore) -> MCPServer:
-    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.2.0")
+def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: Any = None) -> MCPServer:
+    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.3.0")
 
     @mcp.tool(annotations=RO)
     def list_activities(start_date: str | None = None, end_date: str | None = None,
@@ -169,7 +175,8 @@ def build_server(garmin: GarminClient, store: FicheStore) -> MCPServer:
     # ---- Fiches du panneau Coach ------------------------------------------------
     @mcp.tool(annotations=WRITE)
     def publish_fiche(type: str, titre: str, contenu: str, resume: str | None = None,
-                      date: str | None = None, semaine: str | None = None, id: str | None = None) -> dict[str, Any]:
+                      date: str | None = None, semaine: str | None = None, id: str | None = None,
+                      sport: str | None = None, intensite: str | None = None) -> dict[str, Any]:
         """Crée ou met à jour une fiche affichée dans le panneau « Coach » de Home Assistant.
 
         type : semaine (résumé hebdo, affiché en page d'accueil), seance (séance prévue ou réalisée),
@@ -178,9 +185,13 @@ def build_server(garmin: GarminClient, store: FicheStore) -> MCPServer:
         resume : une ou deux phrases affichées en tête de fiche.
         date : AAAA-MM-JJ (jour de la séance / de l'analyse). semaine : AAAA-Wss (semaine ISO, lundi-dimanche).
         Pour type=semaine, une seule fiche par semaine (l'id vaut la semaine) : republier la met à jour.
-        id : pour mettre à jour une fiche existante d'un autre type (voir list_fiches)."""
+        id : pour mettre à jour une fiche existante d'un autre type (voir list_fiches).
+        Séances uniquement : sport (course, natation, swimrun, renfo, velo) et intensite (facile, dure,
+        longue, force = renfo jambes lourd, renfo = renfo léger/haut du corps, technique). Sans eux, ils
+        sont devinés d'après le titre. Écrire la cible de FC sous la forme « FC ≤ 150 » dans le résumé
+        pour que le panneau vérifie la séance réalisée."""
         return store.save(type_=type, titre=titre, contenu=contenu, resume=resume,
-                          date_=date, semaine=semaine, fiche_id=id)
+                          date_=date, semaine=semaine, fiche_id=id, sport=sport, intensite=intensite)
 
     @mcp.tool(annotations=RO)
     def list_fiches(type: str | None = None, semaine: str | None = None) -> dict[str, Any]:
@@ -205,5 +216,83 @@ def build_server(garmin: GarminClient, store: FicheStore) -> MCPServer:
         if not store.delete(type, id):
             raise ToolError(f"Aucune fiche {type}/{id}")
         return {"supprimee": f"{type}/{id}"}
+
+    # ---- Suivi : séances réalisées, ressenti, déplacements -----------------------
+    def _activites(week: str) -> list[dict[str, Any]]:
+        from .panel import TTLCache, week_activities  # import tardif (dépendance circulaire)
+        nonlocal cache
+        cache = cache or TTLCache()
+        return week_activities(garmin, cache, week)[1]
+
+    @mcp.tool(annotations=RO)
+    def get_suivi_semaine(semaine: str | None = None) -> dict[str, Any]:
+        """Vue de suivi d'une semaine (AAAA-Wss, défaut : semaine en cours), synchronisée avec Garmin :
+        chaque séance prévue avec son statut (realisee, manquee, aujourdhui, prevue), le jour d'origine si
+        elle a été déplacée, l'activité associée (même faite un autre jour), le ressenti de l'athlète
+        (effort 1-10, douleurs, note) ; les activités hors plan ; les alertes d'enchaînement."""
+        week = semaine or iso_week(date.today())
+        acts = _activites(week)
+        suivi.sync(week, acts)
+        v = suivi.vue(week, acts)
+        for item in v["seances"]:
+            f = store.get("seance", item["id"]) or {}
+            item["titre"], item["resume"] = f.get("titre"), f.get("resume")
+            a = item.get("activite")
+            if a:
+                item["activite"] = {k: a.get(k) for k in ("activity_id", "nom", "date_locale", "sport", "distance_km",
+                                                          "duree", "allure_min_km", "allure_100m", "fc_moy", "fc_max",
+                                                          "effet_aerobie", "charge", "label_effet") if a.get(k) is not None}
+        for h in v["hors_plan"]:
+            a = h["activite"]
+            h["activite"] = {k: a.get(k) for k in ("activity_id", "nom", "date_locale", "sport", "distance_km", "duree",
+                                                   "allure_min_km", "allure_100m", "fc_moy", "charge", "label_effet")
+                             if a.get(k) is not None}
+        return {"semaine": week, **v}
+
+    @mcp.tool(annotations=RO)
+    def list_evenements(tous: bool = False, limit: int = 100) -> dict[str, Any]:
+        """File des événements remontés par le panneau Coach, non traités par défaut (tous=True pour
+        l'historique) : realisee (séance faite, details.autre_jour si faite un autre jour), hors_plan,
+        manquee, ressenti, deplacement (avec les alertes vues par l'athlète), association, reassociee.
+        À traiter lors du point du soir, puis marquer_evenements_traites."""
+        evs = suivi.evenements(non_traites=not tous, limit=max(1, min(limit, 400)))
+        return {"nombre": len(evs), "evenements": [{k: v for k, v in e.items() if k != "cle"} for e in evs]}
+
+    @mcp.tool(annotations=WRITE)
+    def marquer_evenements_traites(ids: list[str] | None = None, tous: bool = False) -> dict[str, Any]:
+        """Marque des événements comme traités (ids de list_evenements), ou tous les non traités avec tous=True."""
+        if not ids and not tous:
+            raise ToolError("Donner des ids ou tous=True")
+        return {"traites": suivi.marquer_traites(None if tous else ids)}
+
+    @mcp.tool(annotations=WRITE)
+    def modifier_seance(id: str, date: str | None = None, sport: str | None = None, intensite: str | None = None,
+                        activity_id: str | None = None, hors_plan_activity_id: str | None = None) -> dict[str, Any]:
+        """Ajuste une séance prévue sans réécrire son contenu.
+        date : la déplacer (n'importe quelle semaine, contrairement au panneau limité à la semaine).
+        sport / intensite : corriger son classement (voir publish_fiche).
+        activity_id : l'associer manuellement à une activité Garmin (corrige l'association automatique).
+        hors_plan_activity_id : déclarer une activité « hors plan » (la détacher de toute séance)."""
+        out: dict[str, Any] = {"id": id}
+        if sport and sport not in SPORTS_SEANCE:
+            raise ToolError(f"sport doit être l'un de : {', '.join(SPORTS_SEANCE)}")
+        if intensite and intensite not in INTENSITES:
+            raise ToolError(f"intensite doit être l'une de : {', '.join(INTENSITES)}")
+        if store.get("seance", id) is None:
+            raise ToolError(f"Aucune séance {id}")
+        if sport or intensite:
+            store.patch("seance", id, sport=sport, intensite=intensite)
+        try:
+            if date:
+                if not _DATE.match(date):
+                    raise ToolError("date attendue au format AAAA-MM-JJ")
+                out["deplacement"] = suivi.deplacer(id, date, source="coach", meme_semaine=False)
+            if activity_id:
+                out["association"] = suivi.associer(activity_id, id, source="coach")
+            if hors_plan_activity_id:
+                out["hors_plan"] = suivi.associer(hors_plan_activity_id, None, source="coach")
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        return out
 
     return mcp

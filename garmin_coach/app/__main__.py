@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import shutil
+import threading
 from pathlib import Path
 
 import uvicorn
@@ -17,8 +18,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .fiches import FicheStore
 from .garmin import GarminClient
-from .panel import build_panel
+from .panel import TTLCache, build_panel, sync_loop
 from .server import build_server
+from .suivi import SuiviStore
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 OPTIONS_FILE = Path(os.environ.get("OPTIONS_FILE", DATA_DIR / "options.json"))
@@ -118,7 +120,9 @@ def main() -> None:
     migrate_fit_files(DATA_DIR / "fit", FIT_DIR)
     garmin = GarminClient(options.get("garmin_api_key", ""), FIT_DIR)
     store = FicheStore(COACH_DIR)
-    mcp = build_server(garmin, store)
+    suivi = SuiviStore(COACH_DIR, store)
+    cache = TTLCache()
+    mcp = build_server(garmin, store, suivi, cache)
     app = mcp.streamable_http_app(
         streamable_http_path=f"/{token}/mcp",
         stateless_http=True,
@@ -134,16 +138,18 @@ def main() -> None:
             raise SystemExit(f"Certificat introuvable ({cert}, {key}) : vérifiez l'add-on Let's Encrypt / Duck DNS.")
         ssl_kwargs = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
-    LOG.info("Serveur MCP prêt (port %s). URL du connecteur : https://<votre-domaine>/%s…/mcp "
-             "(jeton complet dans l'option access_token)", PORT, token[:4])
+    LOG.info("Serveur MCP prêt. URL du connecteur : https://<votre-domaine>/%s…/mcp "
+             "(jeton complet dans l'option access_token)", token[:4])
     LOG.info("Panneau Coach prêt (Ingress, port %s). Fiches : %s", PANEL_PORT, COACH_DIR)
 
     servers = [
         uvicorn.Server(uvicorn.Config(Guard(app, token), host="0.0.0.0", port=PORT, access_log=False,
                                       log_level=level.lower(), proxy_headers=False, **ssl_kwargs)),
-        uvicorn.Server(uvicorn.Config(build_panel(garmin, store), host="0.0.0.0", port=PANEL_PORT,
+        uvicorn.Server(uvicorn.Config(build_panel(garmin, store, suivi, cache), host="0.0.0.0", port=PANEL_PORT,
                                       access_log=False, log_level=level.lower(), proxy_headers=False)),
     ]
+
+    threading.Thread(target=sync_loop, args=(garmin, suivi, cache), daemon=True, name="suivi").start()
 
     async def serve_all() -> None:
         await asyncio.gather(*(s.serve() for s in servers))

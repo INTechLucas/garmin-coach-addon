@@ -67,3 +67,16 @@ Lecture : `list_activities`, `get_activity_summary`, `get_activity_laps`, `get_a
 `get_wellness`, `get_fitness_metrics`, `list_activity_types`, `garmin_get`.
 
 Fiches du panneau : `publish_fiche`, `list_fiches`, `get_fiche`, `delete_fiche`.
+
+## Suivi des séances (v0.3)
+
+Dans l'onglet **Semaine**, les séances prévues par le coach sont rangées jour par jour.
+
+- **Faite** : l'add-on vérifie Garmin toutes les 30 minutes et associe chaque activité à la séance prévue
+  du même sport, le même jour, ou un autre jour de la semaine s'il s'agit du même type de séance.
+- **Mon ressenti** : effort perçu, douleurs et note, transmis au coach.
+- **Déplacer** : choisir un autre jour de la semaine ; le panneau signale les enchaînements à éviter.
+- **Faite sans montre** : pour une séance non enregistrée sur la montre.
+
+Tout ce qui se passe dans le panneau rejoint une file d'événements que le coach traite lors de son point
+du soir (outil `list_evenements`). L'état est stocké dans `share/garmin-coach/coach/suivi.json`.
