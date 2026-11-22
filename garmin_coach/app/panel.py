@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import markdown as md
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Route
@@ -107,8 +108,13 @@ def week_activities(garmin: GarminClient, cache: "TTLCache", week: str) -> tuple
     return raw, out
 
 
-def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: "TTLCache | None" = None) -> Starlette:
+def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: "TTLCache | None" = None,
+                montre: Any = None) -> Starlette:
     cache = cache or TTLCache()
+
+    def kick() -> None:
+        if montre:
+            montre.kick()
 
     def week_data(week: str) -> dict[str, Any]:
         start, end = week_bounds(week)
@@ -152,8 +158,12 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
             suivi.sync(week, activites)
         planning = suivi.vue(week, activites)
         fiches_seances = {x["id"]: fiche_out(x) for x in store.list("seance", week)}
+        envois = montre.statut()["seances"] if montre else {}
         for item in planning["seances"]:
             item["fiche"] = fiches_seances.get(item["id"])
+            fiche_brute = store.get("seance", item["id"]) or {}
+            if fiche_brute.get("structure"):
+                item["montre"] = envois.get(item["id"]) or {"etat_envoi": "en_attente"}
 
         jours = []
         by = {k: {x.get("date"): x for x in (f.get(k) or []) if isinstance(x, dict)} for k in ("sommeil", "vfc", "journees")}
@@ -174,6 +184,7 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
             "precedente": iso_week(start - timedelta(days=7)), "suivante": iso_week(start + timedelta(days=7)),
             "fiche": fiche_out(fiche) if fiche else None,
             "planning": planning,
+            "montre_connectee": bool(montre and montre.connecte()),
             "douleurs": list(DOULEURS),
             "activites": activites,
             "totaux": {
@@ -223,6 +234,50 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
                                  simuler=bool(b.get("simuler")))
         except (ValueError, Exception) as exc:  # noqa: BLE001
             return _err(exc)
+        if not res.get("simulation"):
+            kick()
+        return JSONResponse(res)
+
+    async def api_maintenant(request: Request):
+        try:
+            res = suivi.deplacer(request.path_params["sid"], date.today().isoformat())
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            return _err(exc)
+        kick()
+        return JSONResponse(res)
+
+    def api_montre(request: Request):
+        if not montre:
+            return JSONResponse({"disponible": False})
+        return JSONResponse({"disponible": True, **montre.statut()})
+
+    async def api_montre_connexion(request: Request):
+        b = await _body(request)
+        try:
+            res = await run_in_threadpool(montre.connexion, str(b.get("email") or ""), str(b.get("password") or ""))
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("Connexion Garmin Connect refusée : %s", type(exc).__name__)
+            return _err(Exception(f"Connexion refusée par Garmin : {exc}"))
+        return JSONResponse(res)
+
+    async def api_montre_mfa(request: Request):
+        b = await _body(request)
+        try:
+            res = await run_in_threadpool(montre.mfa, str(b.get("code") or ""))
+        except Exception as exc:  # noqa: BLE001
+            return _err(Exception(f"Code refusé : {exc}"))
+        return JSONResponse(res)
+
+    async def api_montre_deconnexion(request: Request):
+        montre.deconnexion()
+        return JSONResponse({"connecte": False})
+
+    async def api_montre_sync(request: Request):
+        try:
+            res = await run_in_threadpool(montre.sync)
+        except Exception as exc:  # noqa: BLE001
+            montre.fail(exc)
+            return _err(exc)
         return JSONResponse(res)
 
     async def api_ressenti(request: Request):
@@ -259,6 +314,12 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
         Route("/api/semaines", api_semaines),
         Route("/api/seance/{sid}/deplacer", api_deplacer, methods=["POST"]),
         Route("/api/seance/{sid}/fait", api_fait, methods=["POST"]),
+        Route("/api/seance/{sid}/maintenant", api_maintenant, methods=["POST"]),
+        Route("/api/montre", api_montre),
+        Route("/api/montre/connexion", api_montre_connexion, methods=["POST"]),
+        Route("/api/montre/mfa", api_montre_mfa, methods=["POST"]),
+        Route("/api/montre/deconnexion", api_montre_deconnexion, methods=["POST"]),
+        Route("/api/montre/synchroniser", api_montre_sync, methods=["POST"]),
         Route("/api/ressenti", api_ressenti, methods=["POST"]),
         Route("/api/associer", api_associer, methods=["POST"]),
     ])

@@ -20,6 +20,7 @@ from .fiches import FicheStore
 from .garmin import GarminClient
 from .panel import TTLCache, build_panel, sync_loop
 from .server import build_server
+from .montre import MontreSync
 from .suivi import SuiviStore
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -122,7 +123,8 @@ def main() -> None:
     store = FicheStore(COACH_DIR)
     suivi = SuiviStore(COACH_DIR, store)
     cache = TTLCache()
-    mcp = build_server(garmin, store, suivi, cache)
+    montre = MontreSync(COACH_DIR, DATA_DIR / "garmin_connect", store, suivi)
+    mcp = build_server(garmin, store, suivi, cache, montre)
     app = mcp.streamable_http_app(
         streamable_http_path=f"/{token}/mcp",
         stateless_http=True,
@@ -145,11 +147,12 @@ def main() -> None:
     servers = [
         uvicorn.Server(uvicorn.Config(Guard(app, token), host="0.0.0.0", port=PORT, access_log=False,
                                       log_level=level.lower(), proxy_headers=False, **ssl_kwargs)),
-        uvicorn.Server(uvicorn.Config(build_panel(garmin, store, suivi, cache), host="0.0.0.0", port=PANEL_PORT,
+        uvicorn.Server(uvicorn.Config(build_panel(garmin, store, suivi, cache, montre), host="0.0.0.0", port=PANEL_PORT,
                                       access_log=False, log_level=level.lower(), proxy_headers=False)),
     ]
 
     threading.Thread(target=sync_loop, args=(garmin, suivi, cache), daemon=True, name="suivi").start()
+    threading.Thread(target=montre.loop, daemon=True, name="montre").start()
 
     async def serve_all() -> None:
         await asyncio.gather(*(s.serve() for s in servers))

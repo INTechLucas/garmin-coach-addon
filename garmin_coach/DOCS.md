@@ -80,3 +80,16 @@ Dans l'onglet **Semaine**, les séances prévues par le coach sont rangées jour
 
 Tout ce qui se passe dans le panneau rejoint une file d'événements que le coach traite lors de son point
 du soir (outil `list_evenements`). L'état est stocké dans `share/garmin-coach/coach/suivi.json`.
+
+## Envoi des séances vers la montre (v0.4)
+
+1. Onglet **Montre** : connecte-toi avec ton compte Garmin (et le code de double authentification si
+   demandé). Seul le jeton de connexion est enregistré (`/data/garmin_connect`), jamais le mot de passe.
+2. Les séances que le coach publie avec une structure arrivent dans ton calendrier Garmin, puis sur la
+   montre quand elle se synchronise avec l'appli Garmin Connect.
+3. Changement de programme : « Déplacer » ou « Je la fais maintenant » déplace aussi l'entraînement
+   dans le calendrier Garmin. Les entraînements de la semaine restent disponibles dans
+   Entraînement › Mes entraînements sur la montre.
+
+La connexion utilise la bibliothèque non officielle `garminconnect` : si Garmin modifie sa connexion,
+l'envoi s'arrête (l'onglet Montre l'indique) mais le reste de l'add-on continue de fonctionner.

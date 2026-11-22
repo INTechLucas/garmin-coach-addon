@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0
+- Envoi des séances vers la montre : chaque séance publiée avec une `structure` devient un entraînement
+  « Coach · … » dans le calendrier Garmin Connect, au jour prévu (semaine en cours et suivante).
+  Déplacement, modification et nettoyage des semaines terminées suivent automatiquement.
+- Règles d'exécution : course → échauffement terminé par LAP puis blocs automatiques ; natation → repos
+  terminés par LAP ; renfo → séries en répétitions (LAP) et repos chronométrés, exercices du catalogue
+  Garmin ; crossfit → blocs chronométrés (HIIT, repli en cardio si besoin).
+- Nouvel onglet « Montre » : connexion à Garmin Connect (double authentification gérée), seuls les jetons
+  sont conservés dans `/data` ; synchro manuelle, état des envois.
+- Bouton « Je la fais maintenant » sur les séances de la semaine.
+- Navigation vers la semaine suivante dans l'onglet Semaine.
+- Outils MCP : `publish_fiche(structure=…)`, `etat_montre`, `synchroniser_montre`, `chercher_exercice`.
+- Dépendance : `garminconnect` 0.3.20 (bibliothèque non officielle).
+
 ## 0.3.0
 - Panneau : planning de la semaine jour par jour. Chaque séance prévue indique son statut (faite, prévue,
   aujourd'hui, non faite), l'activité Garmin associée avec un mini-bilan (distance, durée, allure, FC

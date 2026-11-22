@@ -271,6 +271,12 @@ class SuiviStore:
                                 date_=s["date"], seance_id=sid)
             self._save()
 
+    def est_realisee(self, sid: str) -> bool:
+        with self.lock:
+            if self._state["seances"].get(sid, {}).get("fait_manuel"):
+                return True
+            return any(i.get("seance_id") == sid for i in self._state["activites"].values())
+
     # ---- vue de la semaine -----------------------------------------------------
     def vue(self, week: str, activites: list[dict[str, Any]], today: date | None = None) -> dict[str, Any]:
         today = today or date.today()

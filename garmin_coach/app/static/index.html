@@ -133,6 +133,11 @@
     font: inherit; padding: 8px 10px; resize: vertical; }
   dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
   .rpe-l { display: flex; justify-content: space-between; color: var(--ink3); font-size: 11.5px; margin-top: 4px; }
+  .watch { font-size: 12px; font-weight: 600; color: var(--ink3); margin-top: 4px; }
+  .watch.ok { color: var(--ok); } .watch.err { color: var(--warn); }
+  .field { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink);
+    font: inherit; padding: 10px 12px; margin-bottom: 8px; }
+  .note { color: var(--ink2); font-size: 13.5px; margin: 6px 0; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 16px;
     border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 10; }
   @media (max-width: 380px) { .forme { grid-template-columns: 54px repeat(7, 1fr); font-size: 11.5px; } }
@@ -145,6 +150,7 @@
     <button role="tab" data-tab="semaine" aria-selected="true">Semaine</button>
     <button role="tab" data-tab="seance" aria-selected="false">Séances</button>
     <button role="tab" data-tab="analyse" aria-selected="false">Analyses</button>
+    <button role="tab" data-tab="montre" aria-selected="false">Montre</button>
   </div>
   <main id="view"><div class="loading">Chargement…</div></main>
 </div>
@@ -189,7 +195,7 @@ function weekLabel(w) {
   const s = d(w.debut), e = d(w.fin);
   const sameMonth = s.getMonth() === e.getMonth();
   const range = sameMonth ? `${s.getDate()}–${e.getDate()} ${MOIS[e.getMonth()]}` : `${s.getDate()} ${MOIS[s.getMonth()]} – ${e.getDate()} ${MOIS[e.getMonth()]}`;
-  return `<b>${w.courante ? "Cette semaine" : "Semaine " + Number(w.semaine.slice(6))}</b><span>${range} ${e.getFullYear()}</span>`;
+  return `<b>${w.courante ? "Cette semaine" : (w.debut > today ? "Semaine prochaine" : "Semaine " + Number(w.semaine.slice(6)))}</b><span>${range} ${e.getFullYear()}</span>`;
 }
 
 function formeHTML(jours) {
@@ -268,6 +274,15 @@ function ressentiHTML(r) {
   return `<div class="ress">💬 ${esc(p.join(" · ") || "Rien à signaler")}</div>`;
 }
 
+function watchHTML(s) {
+  if (!s.montre || s.statut === "realisee") return "";
+  const m = s.montre;
+  if (!W.montre_connectee) return `<div class="watch">⌚ Montre non connectée (onglet Montre)</div>`;
+  if (m.etat_envoi === "envoyee") return `<div class="watch ok">⌚ Sur la montre</div>`;
+  if (m.etat_envoi === "erreur") return `<div class="watch err">⌚ Envoi en échec : ${esc(m.erreur || "")}</div>`;
+  return `<div class="watch">⌚ Envoi vers la montre en cours…</div>`;
+}
+
 function seanceCard(s) {
   const f = s.fiche || {};
   const sub = [`${SPORT_LIB[s.sport] || s.sport} · ${INT_LIB[s.intensite] || s.intensite}`];
@@ -276,13 +291,14 @@ function seanceCard(s) {
   if (s.fait_manuel && !s.activite) sub.push("cochée sans montre");
   const acts = [];
   if (s.statut === "realisee") acts.push(`<button type="button" data-act="ressenti" data-sid="${esc(s.id)}" data-aid="${esc(s.activite ? s.activite.activity_id : "")}">${s.ressenti ? "Modifier le ressenti" : "Mon ressenti"}</button>`);
+  if (s.statut === "prevue" && W.courante) acts.push(`<button type="button" data-act="maintenant" data-sid="${esc(s.id)}">Je la fais maintenant</button>`);
   if (s.statut !== "realisee") acts.push(`<button type="button" data-act="deplacer" data-sid="${esc(s.id)}">Déplacer</button>`);
   if (s.statut !== "realisee" && s.statut !== "prevue") acts.push(`<button type="button" data-act="fait" data-sid="${esc(s.id)}">Faite sans montre</button>`);
   if (s.fait_manuel && !s.activite) acts.push(`<button type="button" data-act="defait" data-sid="${esc(s.id)}">Annuler</button>`);
   return `<div class="sc ${s.statut}"><div class="top"><div class="tt">${esc(f.titre || s.id)}</div><span class="badge ${s.statut}">${STATUT_LIB[s.statut]}</span></div>
     <div class="sub">${esc(sub.join(" · "))}</div>
     ${s.statut !== "realisee" && f.resume ? `<div class="bilan">${esc(f.resume)}</div>` : ""}
-    ${bilanHTML(s)}${ressentiHTML(s.ressenti)}
+    ${bilanHTML(s)}${ressentiHTML(s.ressenti)}${watchHTML(s)}
     <div class="actions">${acts.join("")}</div>
     ${f.html ? `<details><summary>Détail de la séance</summary><div class="md">${f.html}</div></details>` : ""}</div>`;
 }
@@ -397,6 +413,14 @@ view.addEventListener("click", async ev => {
   if (act === "ressenti") dlgRessenti(sid, aid);
   else if (act === "deplacer") dlgDeplacer(sid);
   else if (act === "associer") dlgAssocier(aid);
+  else if (act === "maintenant") {
+    try {
+      const res = await post(`api/seance/${encodeURIComponent(sid)}/maintenant`, {});
+      toast(W.montre_connectee ? "Placée aujourd'hui · synchronise ta montre" : "Placée aujourd'hui");
+      if (res.alertes && res.alertes.length) setTimeout(() => toast("⚠️ " + res.alertes[0].texte), 2800);
+      render();
+    } catch (e) { toast(e.message); }
+  }
   else if (act === "fait" || act === "defait") {
     try { await post(`api/seance/${encodeURIComponent(sid)}/fait`, { fait: act === "fait" }); toast(act === "fait" ? "Séance cochée" : "Annulé"); render(); }
     catch (e) { toast(e.message); }
@@ -409,7 +433,7 @@ async function renderSemaine() {
   const t = w.totaux, max = Math.max(1, ...t.par_sport.map(s => s.duree_s));
   let h = `<div class="weeknav"><button id="prev" aria-label="Semaine précédente">‹</button>
     <div class="label">${weekLabel(w)}</div>
-    <button id="next" aria-label="Semaine suivante"${w.courante ? " disabled" : ""}>›</button></div>`;
+    <button id="next" aria-label="Semaine suivante"${w.debut > today ? " disabled" : ""}>›</button></div>`;
   if (w.erreurs && w.erreurs.length) h += `<div class="err">Certaines données Garmin n'ont pas pu être lues.</div>`;
   h += `<section class="card"><h2>Résumé du coach</h2>${w.fiche
       ? `${w.fiche.resume ? `<p class="resume">${esc(w.fiche.resume)}</p>` : ""}<div class="md">${w.fiche.html}</div>
@@ -427,7 +451,7 @@ async function renderSemaine() {
   h += `<section class="card"><h2>Toutes les activités</h2>${activitesHTML(w.activites)}</section>`;
   view.innerHTML = h;
   $("#prev").onclick = () => { state.week = w.precedente; render(); };
-  $("#next").onclick = () => { if (!w.courante) { state.week = w.suivante; render(); } };
+  $("#next").onclick = () => { if (w.debut <= today) { state.week = w.suivante; render(); } };
 }
 const groupKey = lib => ({ "Course": "course", "Natation": "natation", "Swimrun": "swimrun", "Renfo / CrossFit": "renfo", "Vélo": "velo" }[lib] || "autre");
 
@@ -450,10 +474,52 @@ async function renderFiches(type) {
   view.innerHTML = h;
 }
 
+
+async function renderMontre() {
+  const m = await api("api/montre");
+  let h = `<section class="card"><h2>Montre Garmin</h2>`;
+  if (!m.disponible) { view.innerHTML = h + `<p class="empty">Envoi vers la montre indisponible.</p></section>`; return; }
+  if (m.connecte) {
+    const n = Object.values(m.seances || {}).filter(x => x.etat_envoi === "envoyee").length;
+    const err = Object.entries(m.seances || {}).filter(([, x]) => x.etat_envoi === "erreur");
+    h += `<p class="resume">✓ Connectée à Garmin Connect</p>
+      <p class="note">${n} séance${n > 1 ? "s" : ""} dans ton calendrier Garmin.${m.derniere_synchro ? ` Dernière synchro : ${new Date(m.derniere_synchro).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" })}.` : ""}</p>
+      ${m.erreur ? `<div class="alerte">${esc(m.erreur)}</div>` : ""}
+      ${err.map(([k, x]) => `<div class="alerte">${esc(k)} : ${esc(x.erreur || "")}</div>`).join("")}
+      <p class="note">Les séances de la semaine (et de la suivante dès le bilan du dimanche) arrivent dans le calendrier Garmin, puis sur la montre à la synchronisation avec l'appli Garmin Connect. Elles restent aussi dans « Entraînements » sur la montre si tu changes d'avis au dernier moment.</p>
+      <div class="actions"><button type="button" id="msync" class="btn primary">Synchroniser maintenant</button><button type="button" id="mout" class="btn">Se déconnecter</button></div>`;
+  } else {
+    h += `<p class="note">Connecte-toi une fois à ton compte Garmin pour que ton coach envoie les séances dans ton calendrier et sur ta montre. Seul le jeton de connexion est conservé dans Home Assistant, jamais ton mot de passe.</p>
+      <form id="mlogin"><input class="field" type="email" id="memail" autocomplete="username" placeholder="E-mail Garmin" required>
+      <input class="field" type="password" id="mpass" autocomplete="current-password" placeholder="Mot de passe" required>
+      <div id="mfa" hidden><input class="field" inputmode="numeric" id="mcode" placeholder="Code reçu (double authentification)"></div>
+      <div class="actions"><button class="btn primary" id="mgo">Se connecter</button></div></form>
+      <p class="note" style="color:var(--ink3)">Connexion non officielle (celle de l'appli Garmin Connect) : si Garmin la modifie, l'envoi peut s'arrêter, le reste du coach continue de fonctionner.</p>`;
+  }
+  view.innerHTML = h + `</section>`;
+  const f = $("#mlogin");
+  if (f) f.onsubmit = async ev => {
+    ev.preventDefault();
+    const btn = $("#mgo"); btn.disabled = true; btn.textContent = "Connexion…";
+    try {
+      if (!$("#mfa").hidden) { await post("api/montre/mfa", { code: $("#mcode").value }); toast("Montre connectée"); return renderMontre(); }
+      const r = await post("api/montre/connexion", { email: $("#memail").value, password: $("#mpass").value });
+      $("#mpass").value = "";
+      if (r.mfa) { $("#mfa").hidden = false; $("#mcode").focus(); btn.textContent = "Valider le code"; toast("Entre le code reçu de Garmin"); }
+      else { toast("Montre connectée"); renderMontre(); }
+    } catch (e) { toast(e.message); btn.textContent = $("#mfa").hidden ? "Se connecter" : "Valider le code"; }
+    finally { btn.disabled = false; }
+  };
+  const s1 = $("#msync"); if (s1) s1.onclick = async () => { s1.disabled = true; s1.textContent = "Synchronisation…";
+    try { const r = await post("api/montre/synchroniser"); toast(`${r.envoyees || 0} séance(s) à jour`); } catch (e) { toast(e.message); } renderMontre(); };
+  const o = $("#mout"); if (o) o.onclick = async () => { await post("api/montre/deconnexion"); renderMontre(); };
+}
+
 async function render() {
   view.innerHTML = `<div class="loading">Chargement…</div>`;
   try {
     if (state.tab === "semaine") await renderSemaine();
+    else if (state.tab === "montre") await renderMontre();
     else await renderFiches(state.tab);
   } catch (e) {
     view.innerHTML = `<div class="err">Impossible de charger les données (${esc(e.message)}). Réessaie dans un instant.</div>`;

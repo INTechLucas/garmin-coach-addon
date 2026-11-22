@@ -97,7 +97,8 @@ class FicheStore:
     # ---- écriture ---------------------------------------------------------
     def save(self, *, type_: str, titre: str, contenu: str, resume: str | None = None,
              date_: str | None = None, semaine: str | None = None, fiche_id: str | None = None,
-             sport: str | None = None, intensite: str | None = None) -> dict[str, Any]:
+             sport: str | None = None, intensite: str | None = None,
+             structure: dict[str, Any] | None = None) -> dict[str, Any]:
         self._check_type(type_)
         if sport and sport not in SPORTS_SEANCE:
             raise ToolError(f"sport doit être l'un de : {', '.join(SPORTS_SEANCE)}")
@@ -140,6 +141,10 @@ class FicheStore:
             if type_ == "seance":
                 fiche["sport"] = sport or (old or {}).get("sport")
                 fiche["intensite"] = intensite or (old or {}).get("intensite")
+                # structure de l'entraînement montre : conservée si non fournie, {} pour la retirer
+                st = (old or {}).get("structure") if structure is None else (structure or None)
+                if st:
+                    fiche["structure"] = st
             self._write(fiche)
         return {"id": fiche_id, "type": type_, "statut": "mise à jour" if old else "créée", "semaine": semaine}
 

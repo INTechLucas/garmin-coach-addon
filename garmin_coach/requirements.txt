@@ -3,3 +3,4 @@ uvicorn>=0.30
 requests>=2.31
 fitdecode==0.10.0
 markdown>=3.6
+garminconnect==0.3.20

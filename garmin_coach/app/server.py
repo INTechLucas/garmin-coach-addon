@@ -13,6 +13,7 @@ from mcp.types import ToolAnnotations
 from . import compact, fit_tools
 from .fiches import INTENSITES, SPORTS_SEANCE, TYPES, FicheStore, iso_week
 from .garmin import GarminClient
+from .montre import MontreSync, StructureError, build_workout
 from .suivi import SuiviStore
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
@@ -80,8 +81,13 @@ def compact_activity(a: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in out.items() if v not in (None, "")}
 
 
-def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: Any = None) -> MCPServer:
-    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.3.0")
+def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: Any = None,
+                 montre: MontreSync | None = None) -> MCPServer:
+    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.4.0")
+
+    def kick() -> None:
+        if montre:
+            montre.kick()
 
     @mcp.tool(annotations=RO)
     def list_activities(start_date: str | None = None, end_date: str | None = None,
@@ -176,7 +182,8 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
     @mcp.tool(annotations=WRITE)
     def publish_fiche(type: str, titre: str, contenu: str, resume: str | None = None,
                       date: str | None = None, semaine: str | None = None, id: str | None = None,
-                      sport: str | None = None, intensite: str | None = None) -> dict[str, Any]:
+                      sport: str | None = None, intensite: str | None = None,
+                      structure: dict[str, Any] | None = None) -> dict[str, Any]:
         """Crée ou met à jour une fiche affichée dans le panneau « Coach » de Home Assistant.
 
         type : semaine (résumé hebdo, affiché en page d'accueil), seance (séance prévue ou réalisée),
@@ -189,9 +196,36 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
         Séances uniquement : sport (course, natation, swimrun, renfo, velo) et intensite (facile, dure,
         longue, force = renfo jambes lourd, renfo = renfo léger/haut du corps, technique). Sans eux, ils
         sont devinés d'après le titre. Écrire la cible de FC sous la forme « FC ≤ 150 » dans le résumé
-        pour que le panneau vérifie la séance réalisée."""
-        return store.save(type_=type, titre=titre, contenu=contenu, resume=resume,
-                          date_=date, semaine=semaine, fiche_id=id, sport=sport, intensite=intensite)
+        pour que le panneau vérifie la séance réalisée.
+
+        structure (séances course, natation, renfo, crossfit) : entraînement envoyé automatiquement dans
+        le calendrier Garmin de l'athlète (et sur sa montre) au jour de la séance. Format :
+        {"sport": "course"|"natation"|"renfo"|"crossfit", "piscine_m": 25 (natation),
+         "etapes": [ étape | {"type": "repeter", "fois": 5, "etapes": [...], "sans_dernier_repos": true} ]}
+        étape = {"type": echauffement|effort|recup|repos|retour|autre,
+                 fin : duree_min / duree_s / distance_m / reps / "fin": "lap",
+                 "cible": {"fc_max": 150} | {"fc": [140, 150]} | {"allure": ["4:20", "4:10"]} (course),
+                 "nage": libre|dos|brasse|papillon|4n|educatif|mixte, "materiel": pull|plaquettes|palmes|
+                 planche|tuba (natation), "exercice": nom du catalogue Garmin (voir chercher_exercice),
+                 "charge_kg", "note": consigne affichée sur la montre}.
+        Préférences de l'athlète appliquées automatiquement : course → l'échauffement se termine par LAP
+        (donner sa durée prévue, il lance les blocs quand il est à un endroit sûr) puis tout est automatique ;
+        natation → nages à la distance, repos terminés par LAP (donner la durée indicative) ; renfo →
+        séries en reps (LAP quand c'est fait) et repos chronométrés ; crossfit → blocs chronométrés
+        (AMRAP = un effort en durée, EMOM = repeter de 60 s, for time = fin lap).
+        structure={} retire l'entraînement de la montre."""
+        if structure:
+            try:
+                build_workout(titre, structure, resume)
+            except StructureError as exc:
+                raise ToolError(f"structure invalide : {exc}") from exc
+        out = store.save(type_=type, titre=titre, contenu=contenu, resume=resume, date_=date, semaine=semaine,
+                         fiche_id=id, sport=sport, intensite=intensite, structure=structure)
+        if type == "seance":
+            kick()
+            if structure:
+                out["montre"] = "envoi en cours vers le calendrier Garmin (voir etat_montre)"
+        return out
 
     @mcp.tool(annotations=RO)
     def list_fiches(type: str | None = None, semaine: str | None = None) -> dict[str, Any]:
@@ -293,6 +327,37 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
                 out["hors_plan"] = suivi.associer(hors_plan_activity_id, None, source="coach")
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
+        kick()
         return out
+
+    # ---- Montre : calendrier Garmin Connect ----------------------------------------
+    @mcp.tool(annotations=RO)
+    def etat_montre() -> dict[str, Any]:
+        """État de l'envoi des séances vers la montre : connexion Garmin Connect, dernière synchro, et pour
+        chaque séance l'état d'envoi (envoyee / erreur avec le message)."""
+        if not montre:
+            raise ToolError("Envoi montre indisponible")
+        return montre.statut()
+
+    @mcp.tool(annotations=WRITE)
+    def synchroniser_montre() -> dict[str, Any]:
+        """Synchronise tout de suite le calendrier Garmin avec les séances (sinon automatique toutes les
+        30 min et après chaque modification). Séances de la semaine en cours et de la suivante."""
+        if not montre:
+            raise ToolError("Envoi montre indisponible")
+        try:
+            return montre.sync()
+        except Exception as exc:  # noqa: BLE001
+            montre.fail(exc)
+            raise ToolError(f"Synchro en échec : {exc}") from exc
+
+    @mcp.tool(annotations=RO)
+    def chercher_exercice(terme: str) -> dict[str, Any]:
+        """Cherche un exercice dans le catalogue Garmin (noms anglais, ex. « squat », « kettlebell swing »,
+        « plank ») pour le champ « exercice » d'une structure renfo / crossfit."""
+        from garminconnect import exercises
+
+        res = exercises.find(terme)[:25]
+        return {"nombre": len(res), "exercices": [e["name"] for e in res]}
 
     return mcp
