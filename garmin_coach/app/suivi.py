@@ -347,12 +347,18 @@ class SuiviStore:
                 si.pop("date_initiale", None)
             si.pop("manquee_signalee", None)
             self.fiches.patch("seance", sid, date_=new_date, semaine=week)
-            if source == "panneau":
+            if source == "panneau" or source.startswith("partenaire:"):
+                par = source.split(":", 1)[1] if source.startswith("partenaire:") else None
                 txt = f"« {f['titre']} » déplacée du {jour(old)} au {jour(new_date)}"
+                if par:
+                    txt += f" par {par} (séance en binôme)"
                 if al:
                     txt += " — alerte : " + "; ".join(x["texte"] for x in al)
+                details = {"de": old, "vers": new_date, "alertes": [x["texte"] for x in al]}
+                if par:
+                    details["par_partenaire"] = par
                 self._event(f"deplacement:{sid}:{now_iso()}", "deplacement", txt, date_=new_date, seance_id=sid,
-                            details={"de": old, "vers": new_date, "alertes": [x["texte"] for x in al]})
+                            details=details)
             self._save()
             return {"alertes": al, "date": new_date, "date_initiale": si.get("date_initiale")}
 

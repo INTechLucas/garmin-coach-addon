@@ -108,15 +108,26 @@ def week_activities(garmin: GarminClient, cache: "TTLCache", week: str) -> tuple
     return raw, out
 
 
-def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: "TTLCache | None" = None,
-                montre: Any = None) -> Starlette:
-    cache = cache or TTLCache()
+def build_panel(equipe: Any) -> Starlette:
+    """equipe : athletes.Equipe. L'athlète affiché est celui de l'en-tête X-Athlete (choix fait dans le panneau),
+    sinon celui associé à l'utilisateur Home Assistant connecté (en-têtes Ingress), sinon le premier."""
 
-    def kick() -> None:
-        if montre:
-            montre.kick()
+    def moi(request: Request) -> Any:
+        h = request.headers
+        return equipe.pour_utilisateur(h.get("x-remote-user-name"), h.get("x-remote-user-display-name"),
+                                       h.get("x-remote-user-id"))
 
-    def week_data(week: str) -> dict[str, Any]:
+    def athlete_de(request: Request) -> Any:
+        choix = request.headers.get("x-athlete") or request.query_params.get("a")
+        if choix:
+            try:
+                return equipe.get(choix)
+            except KeyError:
+                pass
+        return moi(request) or equipe.defaut
+
+    def week_data(A: Any, week: str) -> dict[str, Any]:
+        garmin, store, suivi, montre, cache = A.garmin, A.store, A.suivi, A.montre, A.cache
         start, end = week_bounds(week)
         current = start <= date.today() <= end
         ttl = 300 if current else 6 * 3600
@@ -158,12 +169,15 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
             suivi.sync(week, activites)
         planning = suivi.vue(week, activites)
         fiches_seances = {x["id"]: fiche_out(x) for x in store.list("seance", week)}
-        envois = montre.statut()["seances"] if montre else {}
+        envois = montre.statut()["seances"]
+        partenaires = equipe.partenaires(A)
         for item in planning["seances"]:
             item["fiche"] = fiches_seances.get(item["id"])
             fiche_brute = store.get("seance", item["id"]) or {}
             if fiche_brute.get("structure"):
                 item["montre"] = envois.get(item["id"]) or {"etat_envoi": "en_attente"}
+            if fiche_brute.get("commune"):
+                item["commune"] = [p.nom for p in partenaires if (p.store.get("seance", item["id"]) or {}).get("commune")]
 
         jours = []
         by = {k: {x.get("date"): x for x in (f.get(k) or []) if isinstance(x, dict)} for k in ("sommeil", "vfc", "journees")}
@@ -180,11 +194,12 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
 
         fiche = store.get("semaine", week.lower())
         return {
+            "athlete": A.id,
             "semaine": week, "debut": start.isoformat(), "fin": end.isoformat(), "courante": current,
             "precedente": iso_week(start - timedelta(days=7)), "suivante": iso_week(start + timedelta(days=7)),
             "fiche": fiche_out(fiche) if fiche else None,
             "planning": planning,
-            "montre_connectee": bool(montre and montre.connecte()),
+            "montre_connectee": montre.connecte(),
             "douleurs": list(DOULEURS),
             "activites": activites,
             "totaux": {
@@ -200,22 +215,27 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
     async def index(request: Request):
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
+    def api_athletes(request: Request):
+        m = moi(request)
+        return JSONResponse({"athletes": [{"id": a.id, "nom": a.nom} for a in equipe.liste],
+                             "moi": (m or equipe.defaut).id, "reconnu": m is not None})
+
     def api_semaine(request: Request):
         week = request.query_params.get("w") or iso_week(date.today())
         try:
             week_bounds(week)
         except (ValueError, IndexError):
             return JSONResponse({"erreur": "semaine invalide"}, status_code=400)
-        return JSONResponse(week_data(week))
+        return JSONResponse(week_data(athlete_de(request), week))
 
     def api_fiches(request: Request):
         type_ = request.query_params.get("type")
         if type_ and type_ not in TYPES:
             return JSONResponse({"erreur": "type invalide"}, status_code=400)
-        return JSONResponse({"fiches": [fiche_out(f) for f in store.list(type_)]})
+        return JSONResponse({"fiches": [fiche_out(f) for f in athlete_de(request).store.list(type_)]})
 
     def api_semaines(request: Request):
-        return JSONResponse({"fiches": [fiche_out(f, with_html=False) for f in store.list("semaine")]})
+        return JSONResponse({"fiches": [fiche_out(f, with_html=False) for f in athlete_de(request).store.list("semaine")]})
 
     async def _body(request: Request) -> dict[str, Any]:
         try:
@@ -227,88 +247,117 @@ def build_panel(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cach
     def _err(exc: Exception) -> JSONResponse:
         return JSONResponse({"erreur": str(exc)}, status_code=400)
 
+    def deplacer_binome(A: Any, sid: str, new_date: str) -> list[str]:
+        """Séance commune déplacée depuis le panneau : on déplace aussi celle du ou des partenaires."""
+        f = A.store.get("seance", sid) or {}
+        if not f.get("commune"):
+            return []
+        suivis = []
+        for p in equipe.partenaires(A):
+            pf = p.store.get("seance", sid)
+            if not pf or not pf.get("commune") or pf.get("date") == new_date or p.suivi.est_realisee(sid):
+                continue
+            try:
+                p.suivi.deplacer(sid, new_date, source=f"partenaire:{A.nom}", meme_semaine=False)
+                p.montre.kick()
+                suivis.append(p.nom)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("Déplacement de la séance commune %s chez %s : %s", sid, p.nom, exc)
+        return suivis
+
     async def api_deplacer(request: Request):
+        A = athlete_de(request)
         b = await _body(request)
+        sid, nd = request.path_params["sid"], str(b.get("date", ""))
         try:
-            res = suivi.deplacer(request.path_params["sid"], str(b.get("date", "")),
-                                 simuler=bool(b.get("simuler")))
+            res = A.suivi.deplacer(sid, nd, simuler=bool(b.get("simuler")))
         except (ValueError, Exception) as exc:  # noqa: BLE001
             return _err(exc)
         if not res.get("simulation"):
-            kick()
+            A.montre.kick()
+            res["binome"] = deplacer_binome(A, sid, nd)
         return JSONResponse(res)
 
     async def api_maintenant(request: Request):
+        A = athlete_de(request)
+        sid, nd = request.path_params["sid"], date.today().isoformat()
         try:
-            res = suivi.deplacer(request.path_params["sid"], date.today().isoformat())
+            res = A.suivi.deplacer(sid, nd)
         except (ValueError, Exception) as exc:  # noqa: BLE001
             return _err(exc)
-        kick()
+        A.montre.kick()
+        res["binome"] = deplacer_binome(A, sid, nd)
         return JSONResponse(res)
 
     def api_montre(request: Request):
-        if not montre:
-            return JSONResponse({"disponible": False})
-        return JSONResponse({"disponible": True, **montre.statut()})
+        A = athlete_de(request)
+        return JSONResponse({"disponible": True, "athlete": A.id, "nom": A.nom, **A.montre.statut()})
 
     async def api_montre_connexion(request: Request):
+        A = athlete_de(request)
         b = await _body(request)
         try:
-            res = await run_in_threadpool(montre.connexion, str(b.get("email") or ""), str(b.get("password") or ""))
+            res = await run_in_threadpool(A.montre.connexion, str(b.get("email") or ""), str(b.get("password") or ""))
         except Exception as exc:  # noqa: BLE001
-            LOG.warning("Connexion Garmin Connect refusée : %s", type(exc).__name__)
+            LOG.warning("Connexion Garmin Connect (%s) refusée : %s", A.id, type(exc).__name__)
             return _err(Exception(f"Connexion refusée par Garmin : {exc}"))
         return JSONResponse(res)
 
     async def api_montre_mfa(request: Request):
+        A = athlete_de(request)
         b = await _body(request)
         try:
-            res = await run_in_threadpool(montre.mfa, str(b.get("code") or ""))
+            res = await run_in_threadpool(A.montre.mfa, str(b.get("code") or ""))
         except Exception as exc:  # noqa: BLE001
             return _err(Exception(f"Code refusé : {exc}"))
         return JSONResponse(res)
 
     async def api_montre_deconnexion(request: Request):
-        montre.deconnexion()
+        athlete_de(request).montre.deconnexion()
         return JSONResponse({"connecte": False})
 
     async def api_montre_sync(request: Request):
+        A = athlete_de(request)
         try:
-            res = await run_in_threadpool(montre.sync)
+            res = await run_in_threadpool(A.montre.sync)
         except Exception as exc:  # noqa: BLE001
-            montre.fail(exc)
+            A.montre.fail(exc)
             return _err(exc)
         return JSONResponse(res)
 
     async def api_ressenti(request: Request):
+        A = athlete_de(request)
         b = await _body(request)
         try:
             rpe = b.get("rpe")
-            res = suivi.ressenti(activity_id=b.get("activity_id"), seance_id=b.get("seance_id"),
-                                 rpe=int(rpe) if rpe not in (None, "") else None,
-                                 douleurs=[str(x) for x in (b.get("douleurs") or [])][:10], note=str(b.get("note") or ""))
+            res = A.suivi.ressenti(activity_id=b.get("activity_id"), seance_id=b.get("seance_id"),
+                                   rpe=int(rpe) if rpe not in (None, "") else None,
+                                   douleurs=[str(x) for x in (b.get("douleurs") or [])][:10], note=str(b.get("note") or ""))
         except (ValueError, TypeError) as exc:
             return _err(exc)
         return JSONResponse(res)
 
     async def api_associer(request: Request):
+        A = athlete_de(request)
         b = await _body(request)
         try:
-            res = suivi.associer(str(b.get("activity_id") or ""), b.get("seance_id") or None)
+            res = A.suivi.associer(str(b.get("activity_id") or ""), b.get("seance_id") or None)
         except ValueError as exc:
             return _err(exc)
         return JSONResponse(res)
 
     async def api_fait(request: Request):
+        A = athlete_de(request)
         b = await _body(request)
         try:
-            suivi.fait_manuel(request.path_params["sid"], bool(b.get("fait", True)))
+            A.suivi.fait_manuel(request.path_params["sid"], bool(b.get("fait", True)))
         except ValueError as exc:
             return _err(exc)
         return JSONResponse({"ok": True})
 
     app = Starlette(routes=[
         Route("/", index),
+        Route("/api/athletes", api_athletes),
         Route("/api/semaine", api_semaine),
         Route("/api/fiches", api_fiches),
         Route("/api/semaines", api_semaines),
@@ -331,9 +380,10 @@ def sync_week(garmin: GarminClient, suivi: SuiviStore, cache: TTLCache, week: st
     suivi.sync(week, activites)
 
 
-def sync_loop(garmin: GarminClient, suivi: SuiviStore, cache: TTLCache, interval_s: int = 1800) -> None:
+def sync_loop(garmin: GarminClient, suivi: SuiviStore, cache: TTLCache, interval_s: int = 1800,
+              delai_s: int = 20) -> None:
     """Synchro en tâche de fond : associe les nouvelles activités aux séances et alimente la file du coach."""
-    time.sleep(20)
+    time.sleep(delai_s)
     while True:
         today = date.today()
         weeks = [iso_week(today)]
@@ -343,7 +393,7 @@ def sync_loop(garmin: GarminClient, suivi: SuiviStore, cache: TTLCache, interval
             try:
                 sync_week(garmin, suivi, cache, w)
             except Exception as exc:  # noqa: BLE001
-                LOG.warning("Synchro du suivi (%s) en échec : %s", w, exc)
+                LOG.warning("Synchro du suivi (%s, %s) en échec : %s", suivi.path.parent.parent.name, w, exc)
         time.sleep(interval_s)
 
 

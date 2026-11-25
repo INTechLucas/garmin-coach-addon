@@ -11,10 +11,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from . import compact, fit_tools
-from .fiches import INTENSITES, SPORTS_SEANCE, TYPES, FicheStore, iso_week
-from .garmin import GarminClient
-from .montre import MontreSync, StructureError, build_workout
-from .suivi import SuiviStore
+from .athletes import Athlete, Equipe
+from .fiches import INTENSITES, SPORTS_SEANCE, TYPES, iso_week
+from .montre import StructureError, build_workout
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -23,7 +22,10 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PATH = re.compile(r"^/[A-Za-z0-9_\-/.]+$")
 
 INSTRUCTIONS = (
-    "Données d'entraînement Garmin Connect de l'athlète (lecture seule). "
+    "Données d'entraînement Garmin Connect des athlètes du binôme de swimrun (voir list_athletes). "
+    "Chaque outil prend un paramètre athlete (id, ex. lucas ou anais) ; sans lui, l'outil vise le premier "
+    "athlète de la liste : toujours le préciser quand on travaille pour un autre athlète. "
+    "Une séance faite ensemble se publie chez chacun avec le même id et commune=true (cibles propres à chacun). "
     "Commencer par list_activities pour trouver l'activity_id, puis get_activity_laps pour les tours "
     "(allure, FC, cadence), get_activity_streams pour le détail point par point, "
     "get_wellness pour la récupération (sommeil, VFC, FC repos). "
@@ -81,63 +83,77 @@ def compact_activity(a: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in out.items() if v not in (None, "")}
 
 
-def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cache: Any = None,
-                 montre: MontreSync | None = None) -> MCPServer:
-    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.4.0")
+def build_server(equipe: Equipe) -> MCPServer:
+    mcp = MCPServer(name="garmin-coach", instructions=INSTRUCTIONS, version="0.5.0")
 
-    def kick() -> None:
-        if montre:
-            montre.kick()
+    def _a(athlete: str | None) -> Athlete:
+        try:
+            return equipe.get(athlete)
+        except KeyError as exc:
+            raise ToolError(str(exc.args[0])) from exc
+
+    @mcp.tool(annotations=RO)
+    def list_athletes() -> dict[str, Any]:
+        """Athlètes suivis par le coach (id à passer dans le paramètre athlete des autres outils),
+        avec l'état de leur clé Garmin et de leur connexion montre. Le premier est l'athlète par défaut."""
+        return {"defaut": equipe.defaut.id, "athletes": [a.info() for a in equipe.liste]}
 
     @mcp.tool(annotations=RO)
     def list_activities(start_date: str | None = None, end_date: str | None = None,
-                        activity_type: str | None = None, limit: int = 30, start: int = 0) -> dict[str, Any]:
+                        activity_type: str | None = None, limit: int = 30, start: int = 0,
+                        athlete: str | None = None) -> dict[str, Any]:
         """Liste les activités Garmin (résumé compact), des plus récentes aux plus anciennes.
 
         Dates au format AAAA-MM-JJ (par défaut : 14 derniers jours). activity_type : clé Garmin
         (ex. running, trail_running, lap_swimming, open_water_swimming, swimrun, strength_training) ;
-        voir list_activity_types. limit max 100.
-        """
+        voir list_activity_types. limit max 100. athlete : id (défaut : le premier, voir list_athletes)."""
+        A = _a(athlete)
         today = date.today()
-        data = garmin.search_activities(
+        data = A.garmin.search_activities(
             start=max(0, start), limit=max(1, min(limit, 100)),
             start_date=_d(start_date, today - timedelta(days=14)), end_date=_d(end_date, today),
             activity_type=activity_type or None,
         )
         items = data if isinstance(data, list) else (data or {}).get("activityList", data)
         if not isinstance(items, list):
-            return {"brut": data}
-        return {"nombre": len(items), "activites": [compact_activity(a) for a in items if isinstance(a, dict)]}
+            return {"athlete": A.id, "brut": data}
+        return {"athlete": A.id, "nombre": len(items),
+                "activites": [compact_activity(a) for a in items if isinstance(a, dict)]}
 
     @mcp.tool(annotations=RO)
-    def get_activity_summary(activity_id: int) -> dict[str, Any]:
-        """Détail complet d'une activité tel que fourni par Garmin (JSON brut)."""
-        return {"activite": garmin.activity(activity_id)}
+    def get_activity_summary(activity_id: int, athlete: str | None = None) -> dict[str, Any]:
+        """Détail complet d'une activité tel que fourni par Garmin (JSON brut). athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        return {"athlete": A.id, "activite": A.garmin.activity(activity_id)}
 
     @mcp.tool(annotations=RO)
-    def get_activity_laps(activity_id: int) -> dict[str, Any]:
+    def get_activity_laps(activity_id: int, athlete: str | None = None) -> dict[str, Any]:
         """Sessions et tours décodés depuis le fichier .fit : durée, distance, allure (min/km et /100 m
         en natation), FC moyenne/max, cadence (pas/min en course), D+, puissance, étape de séance.
-        En swimrun, chaque tour indique son sport (course ou natation)."""
-        return fit_tools.laps(garmin.activity_fit(activity_id))
+        En swimrun, chaque tour indique son sport (course ou natation). athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        return {"athlete": A.id, **fit_tools.laps(A.garmin.activity_fit(activity_id))}
 
     @mcp.tool(annotations=RO)
     def get_activity_streams(activity_id: int, interval_s: int = 10,
-                             start_s: int | None = None, end_s: int | None = None) -> str:
+                             start_s: int | None = None, end_s: int | None = None,
+                             athlete: str | None = None) -> str:
         """Données point par point (CSV) : temps écoulé, distance, FC, allure, cadence, altitude, puissance.
-        interval_s = pas d'échantillonnage en secondes ; start_s/end_s pour zoomer sur un passage."""
-        return fit_tools.streams(garmin.activity_fit(activity_id), interval_s, start_s, end_s)
+        interval_s = pas d'échantillonnage en secondes ; start_s/end_s pour zoomer sur un passage.
+        athlete : id (défaut : le premier)."""
+        return fit_tools.streams(_a(athlete).garmin.activity_fit(activity_id), interval_s, start_s, end_s)
 
     @mcp.tool(annotations=RO)
     def get_wellness(start_date: str | None = None, end_date: str | None = None,
-                     brut: bool = False) -> dict[str, Any]:
+                     brut: bool = False, athlete: str | None = None) -> dict[str, Any]:
         """Récupération jour par jour (7 derniers jours par défaut), en résumé compact :
         sommeil (durée, phases, score), VFC (nuit, moyenne 7 j, zone normale, statut),
         journée (FC de repos, stress, Body Battery, pas, minutes intenses).
-        brut=True renvoie les réponses Garmin complètes (très volumineuses)."""
+        brut=True renvoie les réponses Garmin complètes (très volumineuses). athlete : id (défaut : le premier)."""
+        A = _a(athlete)
         today = date.today()
         s, e = _d(start_date, today - timedelta(days=7)), _d(end_date, today)
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"athlete": A.id}
         sources = {
             "sommeil": ("/sleep-service/sleep/dailySleepSummariesByDate", {"startDate": s, "endDate": e}, compact.sleep),
             "vfc": (f"/hrv-service/hrv/daily/{s}/{e}", None, compact.hrv),
@@ -145,22 +161,25 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
         }
         for key, (path, params, fmt) in sources.items():
             try:
-                data = garmin.get(path, params)
+                data = A.garmin.get(path, params)
                 out[key] = data if brut else fmt(data)
             except Exception as exc:  # noqa: BLE001 - une source en échec ne bloque pas les autres
                 out[key] = {"erreur": str(exc)}
         return out
 
     @mcp.tool(annotations=RO)
-    def get_fitness_metrics(start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
-        """VO2max quotidienne (30 derniers jours par défaut) et zones de fréquence cardiaque."""
+    def get_fitness_metrics(start_date: str | None = None, end_date: str | None = None,
+                            athlete: str | None = None) -> dict[str, Any]:
+        """VO2max quotidienne (30 derniers jours par défaut) et zones de fréquence cardiaque.
+        athlete : id (défaut : le premier)."""
+        A = _a(athlete)
         today = date.today()
         s, e = _d(start_date, today - timedelta(days=30)), _d(end_date, today)
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"athlete": A.id}
         for key, path in {"vo2max": f"/metrics-service/metrics/maxmet/daily/{s}/{e}",
                           "zones_fc": "/biometric-service/heartRateZones/v2"}.items():
             try:
-                out[key] = garmin.get(path)
+                out[key] = A.garmin.get(path)
             except Exception as exc:  # noqa: BLE001
                 out[key] = {"erreur": str(exc)}
         return out
@@ -168,24 +187,30 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
     @mcp.tool(annotations=RO)
     def list_activity_types() -> dict[str, Any]:
         """Types et sous-types d'activité Garmin (clés utilisables dans list_activities)."""
-        return {"types": garmin.get("/activity-service/activity/activityTypes/simple")}
+        for A in equipe.liste:  # même catalogue pour tous : premier athlète dont la clé est renseignée
+            if A.garmin.configure:
+                return {"types": A.garmin.get("/activity-service/activity/activityTypes/simple")}
+        raise ToolError("Aucune clé API Garmin configurée")
 
     @mcp.tool(annotations=RO)
-    def garmin_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+    def garmin_get(path: str, params: dict[str, str] | None = None, athlete: str | None = None) -> dict[str, Any]:
         """Requête GET brute sur l'API personnelle Garmin (exploration d'un endpoint sans outil dédié).
-        Ex. path='/hrv-service/hrv/2026-11-20'."""
+        Ex. path='/hrv-service/hrv/2026-11-20'. athlete : id (défaut : le premier)."""
         if not _PATH.match(path) or ".." in path:
             raise ToolError("Chemin invalide : doit commencer par / et ne contenir que lettres, chiffres, -, _, ., /")
-        return {"reponse": garmin.get(path, params)}
+        A = _a(athlete)
+        return {"athlete": A.id, "reponse": A.garmin.get(path, params)}
 
     # ---- Fiches du panneau Coach ------------------------------------------------
     @mcp.tool(annotations=WRITE)
     def publish_fiche(type: str, titre: str, contenu: str, resume: str | None = None,
                       date: str | None = None, semaine: str | None = None, id: str | None = None,
                       sport: str | None = None, intensite: str | None = None,
-                      structure: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Crée ou met à jour une fiche affichée dans le panneau « Coach » de Home Assistant.
+                      structure: dict[str, Any] | None = None, athlete: str | None = None,
+                      commune: bool | None = None) -> dict[str, Any]:
+        """Crée ou met à jour une fiche affichée dans le panneau « Coach » de Home Assistant de l'athlète.
 
+        athlete : id de l'athlète (voir list_athletes ; défaut : le premier). Chaque athlète a ses propres fiches.
         type : semaine (résumé hebdo, affiché en page d'accueil), seance (séance prévue ou réalisée),
         analyse (analyse ponctuelle : course, test, bilan santé), plan (plan d'entraînement).
         contenu : Markdown (titres ##, listes, **gras**, tableaux). Viser court et lisible sur mobile.
@@ -197,6 +222,9 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
         longue, force = renfo jambes lourd, renfo = renfo léger/haut du corps, technique). Sans eux, ils
         sont devinés d'après le titre. Écrire la cible de FC sous la forme « FC ≤ 150 » dans le résumé
         pour que le panneau vérifie la séance réalisée.
+        commune=true (séances) : séance faite en binôme. La publier chez chaque partenaire avec le MÊME id
+        (cibles et structure propres à chacun) ; le panneau l'affiche « en binôme » et un déplacement fait
+        par l'un depuis le panneau déplace aussi la séance de l'autre.
 
         structure (séances course, natation, renfo, crossfit) : entraînement envoyé automatiquement dans
         le calendrier Garmin de l'athlète (et sur sa montre) au jour de la séance. Format :
@@ -208,69 +236,83 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
                  "nage": libre|dos|brasse|papillon|4n|educatif|mixte, "materiel": pull|plaquettes|palmes|
                  planche|tuba (natation), "exercice": nom du catalogue Garmin (voir chercher_exercice),
                  "charge_kg", "note": consigne affichée sur la montre}.
-        Préférences de l'athlète appliquées automatiquement : course → l'échauffement se termine par LAP
-        (donner sa durée prévue, il lance les blocs quand il est à un endroit sûr) puis tout est automatique ;
-        natation → nages à la distance, repos terminés par LAP (donner la durée indicative) ; renfo →
-        séries en reps (LAP quand c'est fait) et repos chronométrés ; crossfit → blocs chronométrés
+        Règles d'exécution appliquées automatiquement : course → l'échauffement se termine par LAP
+        (donner sa durée prévue, l'athlète lance les blocs quand il est à un endroit sûr) puis tout est
+        automatique ; natation → nages à la distance, repos terminés par LAP (donner la durée indicative) ;
+        renfo → séries en reps (LAP quand c'est fait) et repos chronométrés ; crossfit → blocs chronométrés
         (AMRAP = un effort en durée, EMOM = repeter de 60 s, for time = fin lap).
         structure={} retire l'entraînement de la montre."""
+        A = _a(athlete)
         if structure:
             try:
                 build_workout(titre, structure, resume)
             except StructureError as exc:
                 raise ToolError(f"structure invalide : {exc}") from exc
-        out = store.save(type_=type, titre=titre, contenu=contenu, resume=resume, date_=date, semaine=semaine,
-                         fiche_id=id, sport=sport, intensite=intensite, structure=structure)
+        out = A.store.save(type_=type, titre=titre, contenu=contenu, resume=resume, date_=date, semaine=semaine,
+                           fiche_id=id, sport=sport, intensite=intensite, structure=structure, commune=commune)
+        out["athlete"] = A.id
         if type == "seance":
-            kick()
+            A.montre.kick()
             if structure:
                 out["montre"] = "envoi en cours vers le calendrier Garmin (voir etat_montre)"
+            if commune:
+                manquants = [p.id for p in equipe.partenaires(A) if p.store.get("seance", out["id"]) is None]
+                if manquants:
+                    out["a_faire"] = (f"séance commune : la publier aussi pour {', '.join(manquants)} "
+                                      f"avec id={out['id']} et commune=true")
         return out
 
     @mcp.tool(annotations=RO)
-    def list_fiches(type: str | None = None, semaine: str | None = None) -> dict[str, Any]:
-        """Liste les fiches du panneau Coach (sans leur contenu), les plus récentes d'abord.
-        Filtres facultatifs : type (semaine, seance, analyse, plan) et semaine (AAAA-Wss)."""
-        items = store.list(type, semaine)
-        return {"nombre": len(items), "fiches": [
-            {k: f.get(k) for k in ("id", "type", "titre", "date", "semaine", "resume", "mis_a_jour")}
+    def list_fiches(type: str | None = None, semaine: str | None = None,
+                    athlete: str | None = None) -> dict[str, Any]:
+        """Liste les fiches du panneau Coach de l'athlète (sans leur contenu), les plus récentes d'abord.
+        Filtres facultatifs : type (semaine, seance, analyse, plan) et semaine (AAAA-Wss).
+        athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        items = A.store.list(type, semaine)
+        return {"athlete": A.id, "nombre": len(items), "fiches": [
+            {k: f.get(k) for k in ("id", "type", "titre", "date", "semaine", "resume", "mis_a_jour", "commune")
+             if f.get(k) is not None}
             for f in items]}
 
     @mcp.tool(annotations=RO)
-    def get_fiche(type: str, id: str) -> dict[str, Any]:
-        """Contenu complet d'une fiche du panneau Coach."""
-        f = store.get(type, id)
+    def get_fiche(type: str, id: str, athlete: str | None = None) -> dict[str, Any]:
+        """Contenu complet d'une fiche du panneau Coach. athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        f = A.store.get(type, id)
         if f is None:
-            raise ToolError(f"Aucune fiche {type}/{id}")
-        return f
+            raise ToolError(f"Aucune fiche {type}/{id} pour {A.id}")
+        return {"athlete": A.id, **f}
 
     @mcp.tool(annotations=DELETE)
-    def delete_fiche(type: str, id: str) -> dict[str, Any]:
-        """Supprime une fiche du panneau Coach (définitif)."""
-        if not store.delete(type, id):
-            raise ToolError(f"Aucune fiche {type}/{id}")
-        return {"supprimee": f"{type}/{id}"}
+    def delete_fiche(type: str, id: str, athlete: str | None = None) -> dict[str, Any]:
+        """Supprime une fiche du panneau Coach de l'athlète (définitif). athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        if not A.store.delete(type, id):
+            raise ToolError(f"Aucune fiche {type}/{id} pour {A.id}")
+        A.montre.kick()
+        return {"athlete": A.id, "supprimee": f"{type}/{id}"}
 
     # ---- Suivi : séances réalisées, ressenti, déplacements -----------------------
-    def _activites(week: str) -> list[dict[str, Any]]:
-        from .panel import TTLCache, week_activities  # import tardif (dépendance circulaire)
-        nonlocal cache
-        cache = cache or TTLCache()
-        return week_activities(garmin, cache, week)[1]
-
     @mcp.tool(annotations=RO)
-    def get_suivi_semaine(semaine: str | None = None) -> dict[str, Any]:
-        """Vue de suivi d'une semaine (AAAA-Wss, défaut : semaine en cours), synchronisée avec Garmin :
-        chaque séance prévue avec son statut (realisee, manquee, aujourdhui, prevue), le jour d'origine si
-        elle a été déplacée, l'activité associée (même faite un autre jour), le ressenti de l'athlète
-        (effort 1-10, douleurs, note) ; les activités hors plan ; les alertes d'enchaînement."""
+    def get_suivi_semaine(semaine: str | None = None, athlete: str | None = None) -> dict[str, Any]:
+        """Vue de suivi d'une semaine (AAAA-Wss, défaut : semaine en cours) pour un athlète, synchronisée avec
+        Garmin : chaque séance prévue avec son statut (realisee, manquee, aujourdhui, prevue), le jour d'origine
+        si elle a été déplacée, l'activité associée (même faite un autre jour), le ressenti de l'athlète
+        (effort 1-10, douleurs, note), commune=true pour une séance en binôme ; les activités hors plan ;
+        les alertes d'enchaînement. athlete : id (défaut : le premier)."""
+        from .panel import week_activities  # import tardif (dépendance circulaire)
+
+        A = _a(athlete)
         week = semaine or iso_week(date.today())
-        acts = _activites(week)
-        suivi.sync(week, acts)
-        v = suivi.vue(week, acts)
+        acts = week_activities(A.garmin, A.cache, week)[1]
+        A.suivi.sync(week, acts)
+        v = A.suivi.vue(week, acts)
         for item in v["seances"]:
-            f = store.get("seance", item["id"]) or {}
+            f = A.store.get("seance", item["id"]) or {}
             item["titre"], item["resume"] = f.get("titre"), f.get("resume")
+            if f.get("commune"):
+                item["commune"] = True
             a = item.get("activite")
             if a:
                 item["activite"] = {k: a.get(k) for k in ("activity_id", "nom", "date_locale", "sport", "distance_km",
@@ -281,74 +323,82 @@ def build_server(garmin: GarminClient, store: FicheStore, suivi: SuiviStore, cac
             h["activite"] = {k: a.get(k) for k in ("activity_id", "nom", "date_locale", "sport", "distance_km", "duree",
                                                    "allure_min_km", "allure_100m", "fc_moy", "charge", "label_effet")
                              if a.get(k) is not None}
-        return {"semaine": week, **v}
+        return {"athlete": A.id, "semaine": week, **v}
 
     @mcp.tool(annotations=RO)
-    def list_evenements(tous: bool = False, limit: int = 100) -> dict[str, Any]:
-        """File des événements remontés par le panneau Coach, non traités par défaut (tous=True pour
-        l'historique) : realisee (séance faite, details.autre_jour si faite un autre jour), hors_plan,
-        manquee, ressenti, deplacement (avec les alertes vues par l'athlète), association, reassociee.
-        À traiter lors du point du soir, puis marquer_evenements_traites."""
-        evs = suivi.evenements(non_traites=not tous, limit=max(1, min(limit, 400)))
-        return {"nombre": len(evs), "evenements": [{k: v for k, v in e.items() if k != "cle"} for e in evs]}
+    def list_evenements(tous: bool = False, limit: int = 100, athlete: str | None = None) -> dict[str, Any]:
+        """File des événements remontés par le panneau Coach de l'athlète, non traités par défaut (tous=True
+        pour l'historique) : realisee (séance faite, details.autre_jour si faite un autre jour), hors_plan,
+        manquee, ressenti, deplacement (avec les alertes vues par l'athlète, details.par_partenaire si la
+        séance commune a été déplacée par le partenaire), association, reassociee.
+        À traiter lors du point du soir, puis marquer_evenements_traites. athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        evs = A.suivi.evenements(non_traites=not tous, limit=max(1, min(limit, 400)))
+        return {"athlete": A.id, "nombre": len(evs), "evenements": [{k: v for k, v in e.items() if k != "cle"} for e in evs]}
 
     @mcp.tool(annotations=WRITE)
-    def marquer_evenements_traites(ids: list[str] | None = None, tous: bool = False) -> dict[str, Any]:
-        """Marque des événements comme traités (ids de list_evenements), ou tous les non traités avec tous=True."""
+    def marquer_evenements_traites(ids: list[str] | None = None, tous: bool = False,
+                                   athlete: str | None = None) -> dict[str, Any]:
+        """Marque des événements de l'athlète comme traités (ids de list_evenements), ou tous les non traités
+        avec tous=True. athlete : id (défaut : le premier)."""
         if not ids and not tous:
             raise ToolError("Donner des ids ou tous=True")
-        return {"traites": suivi.marquer_traites(None if tous else ids)}
+        A = _a(athlete)
+        return {"athlete": A.id, "traites": A.suivi.marquer_traites(None if tous else ids)}
 
     @mcp.tool(annotations=WRITE)
     def modifier_seance(id: str, date: str | None = None, sport: str | None = None, intensite: str | None = None,
-                        activity_id: str | None = None, hors_plan_activity_id: str | None = None) -> dict[str, Any]:
-        """Ajuste une séance prévue sans réécrire son contenu.
-        date : la déplacer (n'importe quelle semaine, contrairement au panneau limité à la semaine).
+                        activity_id: str | None = None, hors_plan_activity_id: str | None = None,
+                        athlete: str | None = None) -> dict[str, Any]:
+        """Ajuste une séance prévue de l'athlète sans réécrire son contenu.
+        date : la déplacer (n'importe quelle semaine, contrairement au panneau limité à la semaine) ; pour une
+        séance commune, déplacer aussi celle du partenaire si le binôme la fait toujours ensemble.
         sport / intensite : corriger son classement (voir publish_fiche).
         activity_id : l'associer manuellement à une activité Garmin (corrige l'association automatique).
-        hors_plan_activity_id : déclarer une activité « hors plan » (la détacher de toute séance)."""
-        out: dict[str, Any] = {"id": id}
+        hors_plan_activity_id : déclarer une activité « hors plan » (la détacher de toute séance).
+        athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        out: dict[str, Any] = {"athlete": A.id, "id": id}
         if sport and sport not in SPORTS_SEANCE:
             raise ToolError(f"sport doit être l'un de : {', '.join(SPORTS_SEANCE)}")
         if intensite and intensite not in INTENSITES:
             raise ToolError(f"intensite doit être l'une de : {', '.join(INTENSITES)}")
-        if store.get("seance", id) is None:
-            raise ToolError(f"Aucune séance {id}")
+        if A.store.get("seance", id) is None:
+            raise ToolError(f"Aucune séance {id} pour {A.id}")
         if sport or intensite:
-            store.patch("seance", id, sport=sport, intensite=intensite)
+            A.store.patch("seance", id, sport=sport, intensite=intensite)
         try:
             if date:
                 if not _DATE.match(date):
                     raise ToolError("date attendue au format AAAA-MM-JJ")
-                out["deplacement"] = suivi.deplacer(id, date, source="coach", meme_semaine=False)
+                out["deplacement"] = A.suivi.deplacer(id, date, source="coach", meme_semaine=False)
             if activity_id:
-                out["association"] = suivi.associer(activity_id, id, source="coach")
+                out["association"] = A.suivi.associer(activity_id, id, source="coach")
             if hors_plan_activity_id:
-                out["hors_plan"] = suivi.associer(hors_plan_activity_id, None, source="coach")
+                out["hors_plan"] = A.suivi.associer(hors_plan_activity_id, None, source="coach")
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
-        kick()
+        A.montre.kick()
         return out
 
     # ---- Montre : calendrier Garmin Connect ----------------------------------------
     @mcp.tool(annotations=RO)
-    def etat_montre() -> dict[str, Any]:
-        """État de l'envoi des séances vers la montre : connexion Garmin Connect, dernière synchro, et pour
-        chaque séance l'état d'envoi (envoyee / erreur avec le message)."""
-        if not montre:
-            raise ToolError("Envoi montre indisponible")
-        return montre.statut()
+    def etat_montre(athlete: str | None = None) -> dict[str, Any]:
+        """État de l'envoi des séances vers la montre de l'athlète : connexion Garmin Connect, dernière synchro,
+        et pour chaque séance l'état d'envoi (envoyee / erreur avec le message). athlete : id (défaut : le premier)."""
+        A = _a(athlete)
+        return {"athlete": A.id, **A.montre.statut()}
 
     @mcp.tool(annotations=WRITE)
-    def synchroniser_montre() -> dict[str, Any]:
-        """Synchronise tout de suite le calendrier Garmin avec les séances (sinon automatique toutes les
-        30 min et après chaque modification). Séances de la semaine en cours et de la suivante."""
-        if not montre:
-            raise ToolError("Envoi montre indisponible")
+    def synchroniser_montre(athlete: str | None = None) -> dict[str, Any]:
+        """Synchronise tout de suite le calendrier Garmin de l'athlète avec ses séances (sinon automatique toutes
+        les 30 min et après chaque modification). Séances de la semaine en cours et de la suivante.
+        athlete : id (défaut : le premier)."""
+        A = _a(athlete)
         try:
-            return montre.sync()
+            return {"athlete": A.id, **A.montre.sync()}
         except Exception as exc:  # noqa: BLE001
-            montre.fail(exc)
+            A.montre.fail(exc)
             raise ToolError(f"Synchro en échec : {exc}") from exc
 
     @mcp.tool(annotations=RO)

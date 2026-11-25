@@ -8,10 +8,30 @@ et vos données de récupération (sommeil, VFC, FC de repos, VO2max).
 
 | Option | Rôle |
 | --- | --- |
-| `garmin_api_key` | Clé API personnelle créée sur Garmin Connect (Paramètres > Personal API Key). Ne la collez jamais ailleurs. |
+| `athletes` | Liste des athlètes suivis (voir ci-dessous). Le premier est l'athlète par défaut. |
+| `garmin_api_key` | Ancienne option (v0.4) : clé du premier athlète s'il n'en a pas dans `athletes`. |
 | `access_token` | Jeton secret d'au moins 32 caractères qui forme l'URL. Laissez vide au premier démarrage : un jeton est généré et affiché **une fois** dans le journal ; recopiez-le ici. |
 | `ssl`, `certfile`, `keyfile` | Certificat Let's Encrypt présent dans `/ssl` (add-on Duck DNS / Let's Encrypt). |
 | `log_level` | Niveau de journalisation. |
+
+### Athlètes
+
+```yaml
+athletes:
+  - id: lucas
+    nom: Lucas
+    garmin_api_key: "<clé personnelle Garmin de Lucas>"
+    utilisateurs_ha: lucas
+  - id: anais
+    nom: Anaïs
+    garmin_api_key: "<clé personnelle Garmin d'Anaïs>"
+    utilisateurs_ha: chaton
+```
+
+- `garmin_api_key` : clé API personnelle créée sur **le compte Garmin Connect de l'athlète**
+  (Paramètres > Personal API Key). Ne la collez jamais ailleurs.
+- `utilisateurs_ha` : identifiant(s) ou nom(s) affiché(s) Home Assistant (séparés par des virgules) qui
+  ouvrent le panneau sur cet athlète. Le nom et l'id de l'athlète sont aussi reconnus.
 
 ## Accès depuis l'extérieur
 
@@ -51,9 +71,13 @@ Les données Garmin sont mises en cache 5 minutes pour la semaine en cours.
 
 ## Données stockées
 
-- `share/garmin-coach/fit/` : fichiers `.fit` des activités consultées (téléchargés une seule fois),
-  accessibles via le partage Samba (dossier `share`).
-- `share/garmin-coach/coach/` : fiches du panneau (un dossier par type, JSON + copie `.md`).
+Un dossier par athlète, `share/garmin-coach/athletes/<id>/` (visible via Samba) :
+
+- `fit/` : fichiers `.fit` des activités consultées (téléchargés une seule fois).
+- `coach/` : fiches du panneau (un dossier par type, JSON + copie `.md`), `suivi.json`, `montre.json`.
+- `/data/athletes/<id>/garmin_connect` : jetons Garmin Connect de l'athlète (privés).
+
+Les données d'une v0.4 (`share/garmin-coach/coach` et `fit`) sont déplacées automatiquement vers le premier athlète.
 - `/data/access_token` : jeton généré automatiquement (si l'option est vide).
 
 ## Renouvellement de la clé Garmin
@@ -62,6 +86,8 @@ La clé Garmin expire (30 jours à 1 an selon votre choix). Garmin envoie un e-m
 semaine avant : créez une nouvelle clé, collez-la dans `garmin_api_key` et redémarrez l'add-on.
 
 ## Outils exposés
+
+Tous les outils acceptent `athlete` (id ; défaut : le premier athlète). `list_athletes` liste les athlètes.
 
 Lecture : `list_activities`, `get_activity_summary`, `get_activity_laps`, `get_activity_streams`,
 `get_wellness`, `get_fitness_metrics`, `list_activity_types`, `garmin_get`.
@@ -79,7 +105,15 @@ Dans l'onglet **Semaine**, les séances prévues par le coach sont rangées jour
 - **Faite sans montre** : pour une séance non enregistrée sur la montre.
 
 Tout ce qui se passe dans le panneau rejoint une file d'événements que le coach traite lors de son point
-du soir (outil `list_evenements`). L'état est stocké dans `share/garmin-coach/coach/suivi.json`.
+du soir (outil `list_evenements`). L'état est stocké dans `share/garmin-coach/athletes/<id>/coach/suivi.json`.
+
+## Binôme (v0.5)
+
+- Le panneau s'ouvre sur l'athlète du compte Home Assistant connecté ; les boutons en haut à droite
+  permettent de voir l'autre athlète (ressentis et déplacements s'appliquent à l'athlète affiché).
+- Une séance en binôme porte le badge « 👥 avec … ». La déplacer depuis le panneau la déplace aussi chez
+  le partenaire (si elle n'est pas déjà faite), et le coach en est informé dans la file de chacun.
+- Onglet **Montre** : chaque athlète connecte son propre compte Garmin.
 
 ## Envoi des séances vers la montre (v0.4)
 

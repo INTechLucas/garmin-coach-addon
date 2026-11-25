@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+- Plusieurs athlètes (binôme de swimrun) : option `athletes` (id, nom, clé API Garmin, utilisateurs Home Assistant).
+  Chaque athlète a ses fiches, son suivi, ses .fit et sa connexion montre.
+- Nouvelle arborescence : `share/garmin-coach/athletes/<id>/coach` et `.../fit`, jetons montre dans
+  `/data/athletes/<id>/garmin_connect`. Les données v0.4 sont déplacées automatiquement vers le premier athlète.
+- Outils MCP : paramètre `athlete` sur tous les outils (défaut : le premier athlète), nouvel outil `list_athletes`.
+- Séances en binôme : `publish_fiche(commune=true)` avec le même id chez chaque partenaire ; badge « 👥 avec … »
+  dans le panneau ; un déplacement depuis le panneau suit chez le partenaire (événement dans sa file).
+- Panneau : affiche l'athlète correspondant au compte Home Assistant connecté, avec un sélecteur pour voir l'autre.
+- L'ancienne option `garmin_api_key` reste lue pour le premier athlète s'il n'a pas de clé dans la liste.
+
 ## 0.4.0
 - Envoi des séances vers la montre : chaque séance publiée avec une `structure` devient un entraînement
   « Coach · … » dans le calendrier Garmin Connect, au jour prévu (semaine en cours et suivante).

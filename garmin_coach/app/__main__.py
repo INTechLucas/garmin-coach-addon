@@ -9,25 +9,20 @@ import json
 import logging
 import os
 import secrets
-import shutil
 import threading
 from pathlib import Path
 
 import uvicorn
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .fiches import FicheStore
-from .garmin import GarminClient
-from .panel import TTLCache, build_panel, sync_loop
+from .athletes import construire
+from .panel import build_panel, sync_loop
 from .server import build_server
-from .montre import MontreSync
-from .suivi import SuiviStore
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 OPTIONS_FILE = Path(os.environ.get("OPTIONS_FILE", DATA_DIR / "options.json"))
 SSL_DIR = Path(os.environ.get("SSL_DIR", "/ssl"))
-FIT_DIR = Path(os.environ.get("FIT_DIR", "/share/garmin-coach/fit"))
-COACH_DIR = Path(os.environ.get("COACH_DIR", "/share/garmin-coach/coach"))
+SHARE_ROOT = Path(os.environ.get("SHARE_ROOT", "/share/garmin-coach"))
 PANEL_PORT = int(os.environ.get("PANEL_PORT", "8099"))
 # Réseau interne des add-ons HA : seul un proxy situé ici peut indiquer l'IP réelle du client
 TRUSTED_PROXIES = ipaddress.ip_network("172.30.32.0/23")
@@ -52,27 +47,6 @@ def load_access_token(options: dict) -> str:
     LOG.warning("Jeton d'accès généré automatiquement (affiché une seule fois) : %s", token)
     LOG.warning("Copiez-le dans l'option 'access_token' de l'add-on pour le conserver de façon visible.")
     return token
-
-
-def migrate_fit_files(old_dir: Path, new_dir: Path) -> None:
-    """Déplace les .fit de l'ancien emplacement privé (/data/fit, v0.1.0) vers /share."""
-    if not old_dir.is_dir() or old_dir.resolve() == new_dir.resolve():
-        return
-    new_dir.mkdir(parents=True, exist_ok=True)
-    moved = 0
-    for f in old_dir.glob("*.fit"):
-        target = new_dir / f.name
-        if not target.exists():
-            shutil.move(str(f), target)
-            moved += 1
-        else:
-            f.unlink()
-    try:
-        old_dir.rmdir()
-    except OSError:
-        pass
-    if moved:
-        LOG.info("%d fichier(s) .fit déplacé(s) vers %s", moved, new_dir)
 
 
 def client_ip(scope) -> str:
@@ -118,13 +92,8 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     token = load_access_token(options)
-    migrate_fit_files(DATA_DIR / "fit", FIT_DIR)
-    garmin = GarminClient(options.get("garmin_api_key", ""), FIT_DIR)
-    store = FicheStore(COACH_DIR)
-    suivi = SuiviStore(COACH_DIR, store)
-    cache = TTLCache()
-    montre = MontreSync(COACH_DIR, DATA_DIR / "garmin_connect", store, suivi)
-    mcp = build_server(garmin, store, suivi, cache, montre)
+    equipe = construire(options, SHARE_ROOT, DATA_DIR)
+    mcp = build_server(equipe)
     app = mcp.streamable_http_app(
         streamable_http_path=f"/{token}/mcp",
         stateless_http=True,
@@ -142,17 +111,20 @@ def main() -> None:
 
     LOG.info("Serveur MCP prêt. URL du connecteur : https://<votre-domaine>/%s…/mcp "
              "(jeton complet dans l'option access_token)", token[:4])
-    LOG.info("Panneau Coach prêt (Ingress, port %s). Fiches : %s", PANEL_PORT, COACH_DIR)
+    LOG.info("Panneau Coach prêt (Ingress, port %s). Données : %s/athletes/<athlète>", PANEL_PORT, SHARE_ROOT)
 
     servers = [
         uvicorn.Server(uvicorn.Config(Guard(app, token), host="0.0.0.0", port=PORT, access_log=False,
                                       log_level=level.lower(), proxy_headers=False, **ssl_kwargs)),
-        uvicorn.Server(uvicorn.Config(build_panel(garmin, store, suivi, cache, montre), host="0.0.0.0", port=PANEL_PORT,
+        uvicorn.Server(uvicorn.Config(build_panel(equipe), host="0.0.0.0", port=PANEL_PORT,
                                       access_log=False, log_level=level.lower(), proxy_headers=False)),
     ]
 
-    threading.Thread(target=sync_loop, args=(garmin, suivi, cache), daemon=True, name="suivi").start()
-    threading.Thread(target=montre.loop, daemon=True, name="montre").start()
+    for i, a in enumerate(equipe.liste):
+        if a.garmin.configure:
+            threading.Thread(target=sync_loop, args=(a.garmin, a.suivi, a.cache), kwargs={"delai_s": 20 + 40 * i},
+                             daemon=True, name=f"suivi-{a.id}").start()
+        threading.Thread(target=a.montre.loop, daemon=True, name=f"montre-{a.id}").start()
 
     async def serve_all() -> None:
         await asyncio.gather(*(s.serve() for s in servers))

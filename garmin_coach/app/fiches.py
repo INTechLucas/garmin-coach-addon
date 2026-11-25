@@ -98,7 +98,7 @@ class FicheStore:
     def save(self, *, type_: str, titre: str, contenu: str, resume: str | None = None,
              date_: str | None = None, semaine: str | None = None, fiche_id: str | None = None,
              sport: str | None = None, intensite: str | None = None,
-             structure: dict[str, Any] | None = None) -> dict[str, Any]:
+             structure: dict[str, Any] | None = None, commune: bool | None = None) -> dict[str, Any]:
         self._check_type(type_)
         if sport and sport not in SPORTS_SEANCE:
             raise ToolError(f"sport doit être l'un de : {', '.join(SPORTS_SEANCE)}")
@@ -145,6 +145,9 @@ class FicheStore:
                 st = (old or {}).get("structure") if structure is None else (structure or None)
                 if st:
                     fiche["structure"] = st
+                # séance commune du binôme (même id chez chaque partenaire) : conservée si non précisée
+                if (old or {}).get("commune") if commune is None else commune:
+                    fiche["commune"] = True
             self._write(fiche)
         return {"id": fiche_id, "type": type_, "statut": "mise à jour" if old else "créée", "semaine": semaine}
 

@@ -32,10 +32,10 @@ class GarminError(ToolError):
 
 
 class GarminClient:
-    def __init__(self, api_key: str, fit_dir: Path, timeout: float = 30.0) -> None:
-        if not api_key or not api_key.strip():
-            raise GarminError("Clé API Garmin absente : renseignez 'garmin_api_key' dans la configuration de l'add-on.")
-        self._api_key = api_key.strip()
+    def __init__(self, api_key: str, fit_dir: Path, timeout: float = 30.0, nom: str = "") -> None:
+        # Clé absente : l'add-on démarre quand même (autre athlète configuré), l'erreur arrive à l'usage
+        self._api_key = (api_key or "").strip()
+        self._nom = nom
         self._timeout = timeout
         self._session = requests.Session()
         self._lock = threading.Lock()
@@ -45,7 +45,15 @@ class GarminClient:
         self.fit_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- authentification -------------------------------------------------
+    @property
+    def configure(self) -> bool:
+        return bool(self._api_key)
+
     def _bearer(self, force: bool = False) -> str:
+        if not self._api_key:
+            qui = f" de {self._nom}" if self._nom else ""
+            raise GarminError(f"Clé API Garmin{qui} absente : renseignez-la dans la liste 'athletes' de la "
+                              "configuration de l'add-on, puis redémarrez-le.")
         with self._lock:
             if not force and self._token and self._token_exp - time.time() > REFRESH_MARGIN_S:
                 return self._token

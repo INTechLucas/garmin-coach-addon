@@ -138,6 +138,12 @@
   .field { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink);
     font: inherit; padding: 10px 12px; margin-bottom: 8px; }
   .note { color: var(--ink2); font-size: 13.5px; margin: 6px 0; }
+  .who { display: flex; gap: 3px; background: var(--chip); padding: 3px; border-radius: 10px; }
+  .who button { border: 0; background: transparent; color: var(--ink2); font: inherit; font-size: 13.5px; font-weight: 600;
+    padding: 5px 11px; border-radius: 8px; cursor: pointer; }
+  .who button[aria-pressed="true"] { background: var(--accent); color: var(--card); }
+  .binome { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+    background: color-mix(in srgb, var(--swimrun) 15%, transparent); color: var(--swimrun); margin-left: 4px; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 16px;
     border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 10; }
   @media (max-width: 380px) { .forme { grid-template-columns: 54px repeat(7, 1fr); font-size: 11.5px; } }
@@ -145,7 +151,7 @@
 </head>
 <body>
 <div class="wrap">
-  <header><h1>Coach</h1></header>
+  <header><h1>Coach</h1><div class="who" id="who" hidden></div></header>
   <div class="tabs" role="tablist">
     <button role="tab" data-tab="semaine" aria-selected="true">Semaine</button>
     <button role="tab" data-tab="seance" aria-selected="false">Séances</button>
@@ -160,7 +166,8 @@ const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
 const JOURS = ["L", "M", "M", "J", "V", "S", "D"];
 const MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
-let state = { tab: "semaine", week: null };
+let state = { tab: "semaine", week: null, athlete: null, athletes: [] };
+const hdrs = extra => Object.assign({ Accept: "application/json" }, state.athlete ? { "X-Athlete": state.athlete } : {}, extra || {});
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const d = iso => new Date(iso + "T12:00:00");
@@ -171,7 +178,7 @@ const _n = new Date();
 const today = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}-${String(_n.getDate()).padStart(2, "0")}`;
 
 async function api(path) {
-  const r = await fetch(path, { headers: { Accept: "application/json" } });
+  const r = await fetch(path, { headers: hdrs() });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -245,7 +252,7 @@ const jourLong = iso => { const x = d(iso); return `${JOURS_LONG[(x.getDay() + 6
 let W = null;
 
 async function post(path, body) {
-  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body || {}) });
+  const r = await fetch(path, { method: "POST", headers: hdrs({ "Content-Type": "application/json" }), body: JSON.stringify(body || {}) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.erreur || `HTTP ${r.status}`);
   return j;
@@ -289,6 +296,7 @@ function seanceCard(s) {
   if (s.date_initiale && s.date_initiale !== s.date) sub.push(`déplacée (prévue ${jourLong(s.date_initiale)})`);
   if (s.date_realisee && s.date_realisee !== s.date) sub.push(`faite ${jourLong(s.date_realisee)}`);
   if (s.fait_manuel && !s.activite) sub.push("cochée sans montre");
+  const binome = s.commune ? `<span class="binome">👥 ${s.commune.length ? "avec " + esc(s.commune.join(", ")) : "en binôme"}</span>` : "";
   const acts = [];
   if (s.statut === "realisee") acts.push(`<button type="button" data-act="ressenti" data-sid="${esc(s.id)}" data-aid="${esc(s.activite ? s.activite.activity_id : "")}">${s.ressenti ? "Modifier le ressenti" : "Mon ressenti"}</button>`);
   if (s.statut === "prevue" && W.courante) acts.push(`<button type="button" data-act="maintenant" data-sid="${esc(s.id)}">Je la fais maintenant</button>`);
@@ -296,7 +304,7 @@ function seanceCard(s) {
   if (s.statut !== "realisee" && s.statut !== "prevue") acts.push(`<button type="button" data-act="fait" data-sid="${esc(s.id)}">Faite sans montre</button>`);
   if (s.fait_manuel && !s.activite) acts.push(`<button type="button" data-act="defait" data-sid="${esc(s.id)}">Annuler</button>`);
   return `<div class="sc ${s.statut}"><div class="top"><div class="tt">${esc(f.titre || s.id)}</div><span class="badge ${s.statut}">${STATUT_LIB[s.statut]}</span></div>
-    <div class="sub">${esc(sub.join(" · "))}</div>
+    <div class="sub">${esc(sub.join(" · "))}${binome}</div>
     ${s.statut !== "realisee" && f.resume ? `<div class="bilan">${esc(f.resume)}</div>` : ""}
     ${bilanHTML(s)}${ressentiHTML(s.ressenti)}${watchHTML(s)}
     <div class="actions">${acts.join("")}</div>
@@ -380,6 +388,7 @@ function dlgDeplacer(sid) {
       if (!b || b.dataset.v === s.date) return;
       const res = await post(`api/seance/${encodeURIComponent(sid)}/deplacer`, { date: b.dataset.v });
       toast(res.alertes.length ? "Déplacée — attention à l'enchaînement" : "Séance déplacée");
+      if (res.binome && res.binome.length) setTimeout(() => toast(`Séance en binôme : déplacée aussi pour ${res.binome.join(", ")}`), 2800);
     });
   toggleGroup(dlgBody, ".day", false);
   dlgBody.querySelectorAll(".day").forEach(b => b.addEventListener("click", async () => {
@@ -418,6 +427,7 @@ view.addEventListener("click", async ev => {
       const res = await post(`api/seance/${encodeURIComponent(sid)}/maintenant`, {});
       toast(W.montre_connectee ? "Placée aujourd'hui · synchronise ta montre" : "Placée aujourd'hui");
       if (res.alertes && res.alertes.length) setTimeout(() => toast("⚠️ " + res.alertes[0].texte), 2800);
+      else if (res.binome && res.binome.length) setTimeout(() => toast(`Séance en binôme : placée aussi aujourd'hui pour ${res.binome.join(", ")}`), 2800);
       render();
     } catch (e) { toast(e.message); }
   }
@@ -477,7 +487,7 @@ async function renderFiches(type) {
 
 async function renderMontre() {
   const m = await api("api/montre");
-  let h = `<section class="card"><h2>Montre Garmin</h2>`;
+  let h = `<section class="card"><h2>Montre Garmin${state.athletes.length > 1 ? " · " + esc(m.nom || "") : ""}</h2>`;
   if (!m.disponible) { view.innerHTML = h + `<p class="empty">Envoi vers la montre indisponible.</p></section>`; return; }
   if (m.connecte) {
     const n = Object.values(m.seances || {}).filter(x => x.etat_envoi === "envoyee").length;
@@ -525,7 +535,25 @@ async function render() {
     view.innerHTML = `<div class="err">Impossible de charger les données (${esc(e.message)}). Réessaie dans un instant.</div>`;
   }
 }
-render();
+function renderWho() {
+  const el = $("#who");
+  if (state.athletes.length < 2) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = state.athletes.map(a => `<button type="button" data-id="${esc(a.id)}" aria-pressed="${a.id === state.athlete}">${esc(a.nom)}</button>`).join("");
+  el.querySelectorAll("button").forEach(b => b.onclick = () => {
+    if (b.dataset.id === state.athlete) return;
+    state.athlete = b.dataset.id; renderWho(); render();
+  });
+}
+
+(async () => {
+  try {
+    const a = await api("api/athletes");
+    state.athletes = a.athletes; state.athlete = a.moi;
+    renderWho();
+  } catch (e) { /* add-on ancien ou erreur : panneau de l'athlète par défaut */ }
+  render();
+})();
 </script>
 </body>
 </html>
