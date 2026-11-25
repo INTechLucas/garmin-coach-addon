@@ -1,7 +1,7 @@
 name: Garmin Coach MCP
 version: "0.5.0"
 slug: garmin_coach_mcp
-description: Coach Claude pour un ou plusieurs athlètes (binôme de swimrun) : données Garmin, panneau Coach, envoi des séances sur la montre
+description: "Coach Claude pour un ou plusieurs athlètes (binôme de swimrun) : données Garmin, panneau Coach, envoi des séances sur la montre"
 url: https://github.com/INTechLucas/garmin-coach-addon
 arch:
   - amd64
