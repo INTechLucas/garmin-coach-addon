@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.1
+- Le panneau Coach est visible par les utilisateurs non administrateurs.
+
 ## 0.5.0
 - Plusieurs athlètes (binôme de swimrun) : option `athletes` (id, nom, clé API Garmin, utilisateurs Home Assistant).
   Chaque athlète a ses fiches, son suivi, ses .fit et sa connexion montre.

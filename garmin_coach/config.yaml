@@ -1,5 +1,5 @@
 name: Garmin Coach MCP
-version: "0.5.0"
+version: "0.5.1"
 slug: garmin_coach_mcp
 description: "Coach Claude pour un ou plusieurs athlètes (binôme de swimrun) : données Garmin, panneau Coach, envoi des séances sur la montre"
 url: https://github.com/INTechLucas/garmin-coach-addon
@@ -11,6 +11,7 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:run-fast
 panel_title: Coach
+panel_admin: false
 boot: auto
 ports:
   8766/tcp: 8766
