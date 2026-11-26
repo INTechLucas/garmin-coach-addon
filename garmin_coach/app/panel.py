@@ -28,8 +28,10 @@ LOG = logging.getLogger("garmin_coach.panel")
 STATIC = Path(__file__).parent / "static"
 # Seul le proxy Ingress du Supervisor a le droit de parler au panneau
 ALLOWED = [ipaddress.ip_network(n) for n in os.environ.get("PANEL_ALLOWED", "172.30.32.2/32").split(",")]
-# Réseau interne des add-ons : d'autres add-ons (ex. « Liseuse ») peuvent lire ces routes, en GET uniquement
+# Réseau interne des add-ons : d'autres add-ons (ex. « Liseuse ») peuvent lire ces routes (GET)
+# et utiliser les actions du panneau listées dans ECRITURE_INTERNE (POST)
 INTERNE = ipaddress.ip_network(os.environ.get("PANEL_INTERNE", "172.30.32.0/23"))
+ECRITURE_INTERNE = ("/api/seance/", "/api/ressenti")
 LECTURE_INTERNE = ("/api/athletes", "/api/semaine", "/api/fiches")
 
 SPORTS = {
@@ -413,7 +415,9 @@ class IngressOnly:
                 ok = any(ipaddress.ip_address(ip) in n for n in ALLOWED)
             except ValueError:
                 ok = False
-            if not ok and scope.get("method") == "GET" and scope.get("path", "").startswith(LECTURE_INTERNE):
+            chemin, methode = scope.get("path", ""), scope.get("method")
+            if not ok and ((methode == "GET" and chemin.startswith(LECTURE_INTERNE))
+                           or (methode == "POST" and chemin.startswith(ECRITURE_INTERNE))):
                 try:
                     ok = ipaddress.ip_address(ip) in INTERNE
                 except ValueError:
