@@ -28,6 +28,9 @@ LOG = logging.getLogger("garmin_coach.panel")
 STATIC = Path(__file__).parent / "static"
 # Seul le proxy Ingress du Supervisor a le droit de parler au panneau
 ALLOWED = [ipaddress.ip_network(n) for n in os.environ.get("PANEL_ALLOWED", "172.30.32.2/32").split(",")]
+# Réseau interne des add-ons : d'autres add-ons (ex. « Liseuse ») peuvent lire ces routes, en GET uniquement
+INTERNE = ipaddress.ip_network(os.environ.get("PANEL_INTERNE", "172.30.32.0/23"))
+LECTURE_INTERNE = ("/api/athletes", "/api/semaine", "/api/fiches")
 
 SPORTS = {
     "course": ("Course", ("running", "trail_running", "treadmill_running", "track_running", "street_running",
@@ -410,6 +413,11 @@ class IngressOnly:
                 ok = any(ipaddress.ip_address(ip) in n for n in ALLOWED)
             except ValueError:
                 ok = False
+            if not ok and scope.get("method") == "GET" and scope.get("path", "").startswith(LECTURE_INTERNE):
+                try:
+                    ok = ipaddress.ip_address(ip) in INTERNE
+                except ValueError:
+                    ok = False
             if not ok:
                 LOG.warning("Panneau : accès refusé depuis %s", ip)
                 return await PlainTextResponse("Forbidden", status_code=403)(scope, receive, send)

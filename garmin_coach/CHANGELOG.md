@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+- Lecture du planning de la semaine et des fiches ouverte aux autres add-ons (réseau interne de
+  Home Assistant, lecture seule), pour l'add-on « Liseuse » de la liseuse Kobo.
+
 ## 0.5.1
 - Le panneau Coach est visible par les utilisateurs non administrateurs.
 
